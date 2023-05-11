@@ -32,13 +32,15 @@
 #include "mongo/base/init.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/test_commands_enabled.h"
+#include "mongo/util/timer.h"
 
 namespace mongo {
 
 using std::string;
 using std::stringstream;
 
-// Testing-only, enabled via command line.
+//--setParameter enableTestCommands=true
+// Testing-only, enabled via command line.   db.runCommand({ cpuload : 1, cpuFactor : 1000000 })
 class CPULoadCommand : public BasicCommand {
 public:
     CPULoadCommand() : BasicCommand("cpuload") {}
@@ -66,6 +68,8 @@ public:
         if (cmdObj["cpuFactor"].isNumber()) {
             cpuFactor = cmdObj["cpuFactor"].number();
         }
+
+        Timer t{};
         long long limit = 10000 * cpuFactor;
         // volatile used to ensure that loop is not optimized away
         volatile uint64_t lresult = 0;  // NOLINT
@@ -74,12 +78,15 @@ public:
             x *= 13;
         }
         lresult = x;
+
+        result.append("duration", Milliseconds(t.millis()));
         return true;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const {
         return false;
     }
 };
+
 
 MONGO_REGISTER_TEST_COMMAND(CPULoadCommand);
 

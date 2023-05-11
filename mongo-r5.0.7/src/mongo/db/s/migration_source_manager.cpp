@@ -185,6 +185,11 @@ MigrationSourceManager::MigrationSourceManager(OperationContext* opCtx,
 
     const auto collectionVersion = collectionMetadata.getCollVersion();
     const auto shardVersion = collectionMetadata.getShardVersion();
+	LOGV2(227511,
+	"MigrationSourceManager::MigrationSourceManager: {collectionVersion}, {shardVersion}",
+	"MigrationSourceManager::MigrationSourceManager",
+	"collectionVersion"_attr = collectionVersion.toString(),
+	"shardVersion"_attr = shardVersion.toString());
 
     // If the shard major version is zero, this means we do not have any chunks locally to migrate
     uassert(ErrorCodes::IncompatibleShardingMetadata,

@@ -188,6 +188,7 @@ void MetadataManager::setFilteringMetadata(CollectionMetadata remoteMetadata) {
     const auto activeCollVersion = activeMetadata.getCollVersion();
     // Do nothing if the remote version is older than the current active one,
     // or it is the same and there was not an update on the metadata format.
+    //collectionVersion¼ì²é
     if (remoteCollVersion.isOlderThan(activeCollVersion) ||
         (remoteCollVersion == activeCollVersion &&
          remoteCollVersion.getTimestamp() == activeCollVersion.getTimestamp())) {

@@ -498,6 +498,7 @@ TEST_F(CatalogCacheRefreshTest, IncrementalLoadMissingChunkWithLowestVersion) {
     }
 }
 
+
 TEST_F(CatalogCacheRefreshTest, IncrementalLoadMissingChunkWithHighestVersion) {
     const ShardKeyPattern shardKeyPattern(BSON("_id" << 1));
 
@@ -769,6 +770,7 @@ TEST_F(CatalogCacheRefreshTest, IncrementalLoadAfterCollectionEpochChange) {
     ASSERT_EQ(ChunkVersion(1, 1, newVersion.epoch(), newVersion.getTimestamp()),
               cm.getVersion({"1"}));
 }
+
 
 TEST_F(CatalogCacheRefreshTest, IncrementalLoadAfterSplit) {
     const ShardKeyPattern shardKeyPattern(BSON("_id" << 1));

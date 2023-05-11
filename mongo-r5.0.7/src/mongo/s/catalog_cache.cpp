@@ -390,6 +390,7 @@ void CatalogCache::invalidateShardOrEntireCollectionEntryForShardedCollection(
     }
 }
 
+
 void CatalogCache::invalidateEntriesThatReferenceShard(const ShardId& shardId) {
     LOGV2_DEBUG(4997600,
                 1,
@@ -425,14 +426,18 @@ void CatalogCache::invalidateEntriesThatReferenceShard(const ShardId& shardId) {
 }
 
 void CatalogCache::purgeDatabase(StringData dbName) {
+	LOGV2_FOR_CATALOG_REFRESH(24102, 2, "Refreshing cached purgeDatabase", "db"_attr = dbName);
     _databaseCache.invalidate(dbName);
     _collectionCache.invalidateKeyIf(
         [&](const NamespaceString& nss) { return nss.db() == dbName; });
+	LOGV2_FOR_CATALOG_REFRESH(24102, 2, "Refreshing cached purgeDatabase", "db"_attr = dbName);
 }
 
 void CatalogCache::purgeAllDatabases() {
+	LOGV2_FOR_CATALOG_REFRESH(24102, 2, "Refreshing cached purgeAllDatabases", "db"_attr = "xxx");
     _databaseCache.invalidateAll();
     _collectionCache.invalidateAll();
+	LOGV2_FOR_CATALOG_REFRESH(24102, 2, "Refreshing cached purgeAllDatabases", "db"_attr = "xxx");
 }
 
 
@@ -690,7 +695,8 @@ CatalogCache::CollectionCache::LookupResult CatalogCache::CollectionCache::_look
  	    //mongos config-server都对应ConfigServerCatalogCacheLoader  mongod都对应 ShardServerCatalogCacheLoader
 
 		//从config server获取最新变化的路由信息
-		//ShardServerCatalogCacheLoader::getChunksSince
+		//ShardServerCatalogCacheLoader::getChunksSince     
+		//返回CollectionAndChangedChunks类型
         auto collectionAndChunks = _catalogCacheLoader.getChunksSince(nss, lookupVersion).get();
 
 		//返回值为RoutingTableHistory类型
@@ -714,7 +720,8 @@ CatalogCache::CollectionCache::LookupResult CatalogCache::CollectionCache::_look
 					//RoutingTableHistory::makeUpdated
 					return existingHistory->optRt->makeUpdated(collectionAndChunks.reshardingFields,
                                                                collectionAndChunks.allowMigrations,
-                                                               collectionAndChunks.changedChunks);
+                                                               collectionAndChunks.changedChunks
+                                                               );
                 }
             }
 

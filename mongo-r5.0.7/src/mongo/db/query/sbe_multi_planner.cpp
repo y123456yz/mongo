@@ -43,6 +43,7 @@
 #include "mongo/logv2/log.h"
 
 namespace mongo::sbe {
+//getSlotBasedExecutor
 CandidatePlans MultiPlanner::plan(
     std::vector<std::unique_ptr<QuerySolution>> solutions,
     std::vector<std::pair<std::unique_ptr<PlanStage>, stage_builder::PlanStageData>> roots) {

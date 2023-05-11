@@ -442,7 +442,7 @@ private:
  * Caches the best solution to a query.  Aside from the (CanonicalQuery -> QuerySolution)
  * mapping, the cache contains information on why that mapping was made and statistics on the
  * cache entry's actual performance on subsequent runs.
- */
+ */ //CollectionQueryInfo._planCache  通过PlanCache* cache = CollectionQueryInfo::get(collection()).getPlanCache();获取对应plancache
 class PlanCache {
 private:
     PlanCache(const PlanCache&) = delete;

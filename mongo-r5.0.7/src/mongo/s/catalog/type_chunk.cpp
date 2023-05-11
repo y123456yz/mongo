@@ -167,6 +167,7 @@ bool ChunkRange::operator!=(const ChunkRange& other) const {
     return !(*this == other);
 }
 
+//包含，例如[1-50]包含[20,30]
 bool ChunkRange::covers(ChunkRange const& other) const {
     auto le = [](auto const& a, auto const& b) { return a.woCompare(b) <= 0; };
     return le(_minKey, other._minKey) && le(other._maxKey, _maxKey);
@@ -184,6 +185,7 @@ boost::optional<ChunkRange> ChunkRange::overlapWith(ChunkRange const& other) con
 
 //两个chunk有重叠  如有交集:[100-200> 与 [80,150>   包含: [100-200> 与 [110,15>都满足条件
 bool ChunkRange::overlaps(const ChunkRange& other) const {
+	//BSONObj::woCompare
     return _minKey.woCompare(other._maxKey) < 0 && _maxKey.woCompare(other._minKey) > 0;
 }
 

@@ -119,13 +119,16 @@ public:
                       "Routing info requested by getShardVersion",
                       //ChunkManager::toString->RoutingTableHistory::toString
                       "routingInfo"_attr = redact(cm.toString()));
-
+                //这里的嵌套可以参考db.adminCommand({getShardVersion :"yyz.yyz1", fullMetadata: true})
                 cm.forEachChunk([&](const auto& chunk) {
                     if (!exceedsSizeLimit) {
                         BSONArrayBuilder chunkBB(chunksArrBuilder.subarrayStart());
+                        //
                         chunkBB.append(chunk.getMin());
                         chunkBB.append(chunk.getMax());
                         chunkBB.done();
+
+                        //这里是不是应该减去"chunks"的长度
                         if (chunksArrBuilder.len() + result.len() > BSONObjMaxUserSize) {
                             exceedsSizeLimit = true;
                         }

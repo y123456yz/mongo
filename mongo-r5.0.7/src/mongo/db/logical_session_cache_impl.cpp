@@ -315,6 +315,16 @@ void LogicalSessionCacheImpl::_refresh(Client* client) {
     }
 
     // Refresh the active sessions in the sessions collection.
+    //1. mongod对应makeSessionsCollection中构造使用，
+	// 和SessionsCollectionSharded	SessionsCollectionConfigServer SessionsCollectionRS SessionsCollectionStandalone同级
+	// mongos对应SessionsCollectionSharded，见makeLogicalSessionCacheS
+	//2. mongos对应SessionsCollectionSharded::refreshSessions  mongod对应SessionsCollectionRS::refreshSessions
+
+	//mongos> db.system.sessions.find();
+	//{ "_id" : { "id" : UUID("14c31e1f-c245-46ea-a229-7c31a4b042db"), "uid" : BinData(0,"47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=") }, "lastUse" : ISODate("2021-05-13T19:17:23.232Z") }
+	//向config server中的system.sessions发送update，同时upsert:true，没有则添加。也就是更新session内容
+
+    // Refresh the active sessions in the sessions collection.
     _sessionsColl->refreshSessions(opCtx, activeSessionRecords);
     activeSessionsBackSwapper.dismiss();
     {
@@ -323,6 +333,7 @@ void LogicalSessionCacheImpl::_refresh(Client* client) {
     }
 
     // Remove the ending sessions from the sessions collection.
+    //2. mongos对应SessionsCollectionSharded::removeRecords  mongod对应SessionsCollectionRS::removeRecords
     _sessionsColl->removeRecords(opCtx, explicitlyEndingSessions);
     explicitlyEndingBackSwaper.dismiss();
     {

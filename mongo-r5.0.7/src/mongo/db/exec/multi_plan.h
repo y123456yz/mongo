@@ -182,6 +182,7 @@ private:
 
     // index into _candidates, of the backup plan for sort
     // uses -1 / kNoSuchPlan when best plan is not (yet) known
+    //MultiPlanStage::doWork中真正用到
     int _backupPlanIdx;
 
     // Count of the number of candidate plans that have failed during the trial period. The

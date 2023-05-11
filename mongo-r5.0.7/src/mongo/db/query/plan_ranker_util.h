@@ -50,9 +50,9 @@ std::unique_ptr<PlanScorer<PlanStageStats>> makePlanScorer();
  * holds indices into candidates ordered by score (winner in first element).
  *
  * Returns an error if there was an issue with plan ranking (e.g. there was no viable plan).
- */
+ */ //对每个候选索引进行评分  MultiPlanStage::pickBestPlan  MultiPlanner::plan
 template <typename PlanStageStatsType, typename PlanStageType, typename ResultType, typename Data>
-StatusWith<std::unique_ptr<PlanRankingDecision>> pickBestPlan(
+StatusWith<std::unique_ptr<PlanRankingDecision>> pickBestPlan( //plan_ranker::pickBestPlan
     const std::vector<BaseCandidatePlan<PlanStageType, ResultType, Data>>& candidates) {
     invariant(!candidates.empty());
     // A plan that hits EOF is automatically scored above
@@ -62,6 +62,7 @@ StatusWith<std::unique_ptr<PlanRankingDecision>> pickBestPlan(
     double eofBonus = 1.0;
 
     // Get stat trees from each plan.
+    //获取候选索引
     std::vector<std::unique_ptr<PlanStageStatsType>> statTrees;
     for (size_t i = 0; i < candidates.size(); ++i) {
         if constexpr (std::is_same_v<PlanStageStatsType, PlanStageStats>) {
@@ -108,6 +109,7 @@ StatusWith<std::unique_ptr<PlanRankingDecision>> pickBestPlan(
                     return sbe::plan_ranker::makePlanScorer(solution);
                 }
             }();
+            //候选索引评分值  //PlanScorer::calculateScore
             double score = scorer->calculateScore(statTrees[i].get());
             log_detail::logScore(score);
             if (statTrees[i]->common.isEOF) {

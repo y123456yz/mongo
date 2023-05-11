@@ -221,6 +221,7 @@ Status userAllowedCreateNS(OperationContext* opCtx, const NamespaceString& ns) {
                       str::stream() << "Invalid collection name: " << ns.coll());
     }
 
+    //config server不允许创建admin config local以外的库
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && !ns.isOnInternalDb()) {
         return Status(ErrorCodes::InvalidNamespace,
                       str::stream()

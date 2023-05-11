@@ -103,7 +103,6 @@ void BM_futureIntDeferredThenImmediate(benchmark::State& state) {
     }
 }
 
-
 void BM_futureIntDeferredThenReady(benchmark::State& state) {
     for (auto _ : state) {
         benchmark::ClobberMemory();

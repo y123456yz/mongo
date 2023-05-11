@@ -58,6 +58,7 @@ namespace mongo {
 // static
 const char* CachedPlanStage::kStageType = "CACHED_PLAN";
 
+//buildCachedPlanÖÐÉú³É
 CachedPlanStage::CachedPlanStage(ExpressionContext* expCtx,
                                  const CollectionPtr& collection,
                                  WorkingSet* ws,

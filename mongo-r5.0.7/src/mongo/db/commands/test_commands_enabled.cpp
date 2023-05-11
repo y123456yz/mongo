@@ -34,6 +34,7 @@
 
 namespace mongo {
 
+//--setParameter enableTestCommands=true
 bool getTestCommandsEnabled() {
     return gEnableTestCommands;
 }

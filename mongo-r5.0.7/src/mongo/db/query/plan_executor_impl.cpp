@@ -176,7 +176,8 @@ PlanExecutorImpl::PlanExecutorImpl(OperationContext* opCtx,
 
 Status PlanExecutorImpl::_pickBestPlan() {
     invariant(_currentState == kUsable);
-
+    
+    //foundStage判断是需要多个候选索引评分计算，还是直接使用缓存的plancache，PrepareExecutionHelper::prepare()中确定
     // First check if we need to do subplanning.
     PlanStage* foundStage = getStageByType(_root.get(), STAGE_SUBPLAN);
     if (foundStage) {
@@ -187,15 +188,16 @@ Status PlanExecutorImpl::_pickBestPlan() {
     // If we didn't have to do subplanning, we might still have to do regular
     // multi plan selection...
     foundStage = getStageByType(_root.get(), STAGE_MULTI_PLAN);
-    if (foundStage) {
+    if (foundStage) { //多个plan，则需要评分选择最优的
         MultiPlanStage* mps = static_cast<MultiPlanStage*>(foundStage);
-        return mps->pickBestPlan(_yieldPolicy.get());
+        //MultiPlanStage::pickBestPlan
+        return mps->pickBestPlan(_yieldPolicy.get()); 
     }
 
     // ...or, we might have to run a plan from the cache for a trial period, falling back on
     // regular planning if the cached plan performs poorly.
     foundStage = getStageByType(_root.get(), STAGE_CACHED_PLAN);
-    if (foundStage) {
+    if (foundStage) {//直接缓存的plancache
         CachedPlanStage* cachedPlan = static_cast<CachedPlanStage*>(foundStage);
         return cachedPlan->pickBestPlan(_yieldPolicy.get());
     }

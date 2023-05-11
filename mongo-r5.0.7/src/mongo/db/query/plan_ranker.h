@@ -81,7 +81,8 @@ public:
     PlanScorer() = default;
     virtual ~PlanScorer() = default;
 
-    double calculateScore(const PlanStageStatsType* stats) const {
+    ////plan_ranker::pickBestPlan
+    double calculateScore(const PlanStageStatsType* stats) const {//PlanScorer::calculateScore
         // We start all scores at 1.  Our "no plan selected" score is 0 and we want all plans to
         // be greater than that.
         const double baseScore = 1;

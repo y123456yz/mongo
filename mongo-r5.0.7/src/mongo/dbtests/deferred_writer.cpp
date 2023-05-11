@@ -133,7 +133,7 @@ public:
      * Get a writer to the test collection.
      */
     RaiiWrapper getWriter(CollectionOptions options = CollectionOptions(),
-                          int64_t maxSize = 200'000) {
+                          int64_t maxSize = 200000) {
         return RaiiWrapper(std::make_unique<DeferredWriter>(kTestNamespace, options, maxSize));
     }
 
@@ -293,7 +293,7 @@ public:
         // Add a few hundred documents.
         int maxDocs = 500;
         // (more than can fit in a 2KB buffer).
-        int bufferSize = 2'000;
+        int bufferSize = 2000;
 
         // Keep track of what we add.
         int bytesAdded = 0;

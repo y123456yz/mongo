@@ -128,7 +128,7 @@ struct ServerGlobalParams {
     ClusterAuthMode startupClusterAuthMode;
 
     // for the YAML config, sharding._overrideShardIdentity. Can only be used when in
-    // queryableBackupMode.
+    // queryableBackupMode.  //记录在 db.system.version.find()表中
     BSONObj overrideShardIdentity;
 
     // True if the current binary version is an LTS Version.

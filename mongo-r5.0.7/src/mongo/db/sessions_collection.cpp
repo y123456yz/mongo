@@ -43,6 +43,10 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/write_ops/batched_command_response.h"
+#include "mongo/db/logical_session_cache.h"
+
+
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 namespace mongo {
 namespace {
@@ -89,7 +93,7 @@ template <typename TFactory, typename AddLineFn, typename SendFn, typename Conta
 void runBulkGeneric(TFactory makeT, AddLineFn addLine, SendFn sendBatch, const Container& items) {
     using T = decltype(makeT());
 
-    size_t i = 0;
+    int i = 0;
     boost::optional<T> thing;
 
     auto setupBatch = [&] {
@@ -102,13 +106,21 @@ void runBulkGeneric(TFactory makeT, AddLineFn addLine, SendFn sendBatch, const C
     setupBatch();
 
     for (const auto& item : items) {
-        addLine(*thing, item);
-
-        if (++i >= kMaxBatchSize) {
+        auto exceedsSizeLimit = false;
+        if (addLine(*thing, item) == false) {
+            exceedsSizeLimit = true;
+        }
+        
+        const int batchMaxOperation = logicalSessionCacheRefreshOperationBatchSize.load();
+        if (exceedsSizeLimit == true || ++i >= batchMaxOperation) {
             sendLocalBatch();
-
+            sleepmillis(logicalSessionCacheRefreshOperationBatchDelayMS.load());
+            
             setupBatch();
         }
+
+        if (exceedsSizeLimit == true)
+            addLine(*thing, item);
     }
 
     if (i > 0) {
@@ -190,6 +202,7 @@ SessionsCollection::FindBatchFn SessionsCollection::makeFindFnForCommand(const N
     return send;
 }
 
+//SessionsCollectionRS::refreshSessions
 void SessionsCollection::_doRefresh(const NamespaceString& ns,
                                     const std::vector<LogicalSessionRecord>& sessions,
                                     SendBatchFn send) {
@@ -200,12 +213,43 @@ void SessionsCollection::_doRefresh(const NamespaceString& ns,
     };
 
     auto add = [](BSONArrayBuilder* entries, const LogicalSessionRecord& record) {
-        entries->append(
-            BSON("q" << lsidQuery(record) << "u" << updateQuery(record) << "upsert" << true));
+        BSONObj lsidUpsertObj = BSON("q" << lsidQuery(record) << "u" << updateQuery(record) 
+            << "upsert" << true);
+        if ((entries->len() + lsidUpsertObj.objsize()) < BSONObjMaxUserSize) {
+            const int batchMaxOperation = logicalSessionCacheRefreshOperationBatchSize.load();
+            const int delayMs = logicalSessionCacheRefreshOperationBatchDelayMS.load();
+            LOGV2(2187211,
+              "SessionsCollection::_doRefresh, {bsonLen}, {batchMaxOperation}, {delayMs}",
+              "SessionsCollection::_doRefresh",
+              "bsonLen"_attr = (entries->len() + lsidUpsertObj.objsize()),
+              "batchMaxOperation"_attr = batchMaxOperation,
+              "delayMs"_attr = delayMs);
+            entries->append(lsidUpsertObj);
+            return true;
+        }
+
+        return false;
+        //entries->append(
+            //BSON("q" << lsidQuery(record) << "u" << updateQuery(record) << "upsert" << true));
     };
 
+/*
+db.runCommand(
+   {
+      update: "members",
+      updates: [
+         { q: { status: "P" }, u: { $set: { status: "D" } }, multi: true },
+         { q: { _id: 5 }, u: { _id: 5, name: "abc123", status: "A" }, upsert: true }
+      ],
+      ordered: false,
+      writeConcern: { w: "majority", wtimeout: 5000 }
+   }
+)
+²Î¿¼https://www.mongodb.com/docs/manual/reference/command/update/
+*/
     runBulkCmd("updates", init, add, send, sessions);
 }
+
 
 void SessionsCollection::_doRemove(const NamespaceString& ns,
                                    const std::vector<LogicalSessionId>& sessions,
@@ -217,7 +261,18 @@ void SessionsCollection::_doRemove(const NamespaceString& ns,
     };
 
     auto add = [](BSONArrayBuilder* builder, const LogicalSessionId& lsid) {
-        builder->append(BSON("q" << lsidQuery(lsid) << "limit" << 0));
+        BSONObj lsidQueryObj = BSON("q" << lsidQuery(lsid) << "limit" << 0);
+        if ((builder->len() + lsidQueryObj.objsize()) < BSONObjMaxUserSize) {
+            LOGV2(2187222,
+              "SessionsCollection::_doRemove, {bsonLen}",
+              "SessionsCollection::_doRemove",
+              "bsonLen"_attr = (builder->len() + lsidQueryObj.objsize()));
+            builder->append(lsidQueryObj);
+            return true;
+        }
+
+        return false;
+        //builder->append(BSON("q" << lsidQuery(lsid) << "limit" << 0));
     };
 
     runBulkCmd("deletes", init, add, send, sessions);
@@ -228,7 +283,12 @@ LogicalSessionIdSet SessionsCollection::_doFindRemoved(
     auto makeT = [] { return std::vector<LogicalSessionId>{}; };
 
     auto add = [](std::vector<LogicalSessionId>& batch, const LogicalSessionId& record) {
+       LOGV2(2187333,
+          "SessionsCollection::_doFindRemoved, {bsonLen}",
+          "SessionsCollection::_doFindRemoved",
+          "bsonLen"_attr = 0);
         batch.push_back(record);
+        return true;
     };
 
     LogicalSessionIdSet removed{sessions.begin(), sessions.end()};

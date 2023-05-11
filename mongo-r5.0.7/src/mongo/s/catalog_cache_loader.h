@@ -65,7 +65,10 @@ public:
 
     /**
      * Used as a return value for getChunksSince.
-     */
+     
+     Config_server_catalog_cache_loader.cpp (src\mongo\s):    return CollectionAndChangedChunks{coll.getEpoch(),
+     Shard_server_catalog_cache_loader.cpp (src\mongo\db\s):    return CollectionAndChangedChunks{shardCollectionEntry.getEpoch(),
+     */ //getPersistedMetadataSinceVersion getChangedChunks   
     struct CollectionAndChangedChunks {
         CollectionAndChangedChunks();
         CollectionAndChangedChunks(
@@ -82,6 +85,7 @@ public:
 
         // Information about the entire collection
         OID epoch;
+        //²Î¿¼CollectionTypeBase::getTimestamp
         boost::optional<Timestamp> creationTime;
         boost::optional<UUID> uuid;  // This value can never be boost::none,
                                      // except under the default constructor

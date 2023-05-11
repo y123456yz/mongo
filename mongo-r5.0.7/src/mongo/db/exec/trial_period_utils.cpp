@@ -34,15 +34,18 @@
 #include "mongo/db/catalog/collection.h"
 
 namespace mongo::trial_period {
+//最少10000，最大表数据量*0.3
 size_t getTrialPeriodMaxWorks(OperationContext* opCtx, const CollectionPtr& collection) {
     // Run each plan some number of times. This number is at least as great as
     // 'internalQueryPlanEvaluationWorks', but may be larger for big collections.
+    //默认值10000
     size_t numWorks = internalQueryPlanEvaluationWorks.load();
     if (collection) {
         // For large collections, the number of works is set to be this fraction of the collection
         // size.
-        double fraction = internalQueryPlanEvaluationCollFraction;
+        double fraction = internalQueryPlanEvaluationCollFraction; //0.3
 
+        // 100000
         numWorks = std::max(static_cast<size_t>(internalQueryPlanEvaluationWorks.load()),
                             static_cast<size_t>(fraction * collection->numRecords(opCtx)));
     }
@@ -50,9 +53,12 @@ size_t getTrialPeriodMaxWorks(OperationContext* opCtx, const CollectionPtr& coll
     return numWorks;
 }
 
+//默认值101  "Stop working plans once a plan returns this many results."
 size_t getTrialPeriodNumToReturn(const CanonicalQuery& query) {
     // Determine the number of results which we will produce during the plan ranking phase before
     // stopping.
+
+    //默认值101  "Stop working plans once a plan returns this many results."
     size_t numResults = static_cast<size_t>(internalQueryPlanEvaluationMaxResults.load());
     if (query.getFindCommandRequest().getNtoreturn()) {
         numResults = std::min(static_cast<size_t>(*query.getFindCommandRequest().getNtoreturn()),
@@ -65,3 +71,4 @@ size_t getTrialPeriodNumToReturn(const CanonicalQuery& query) {
     return numResults;
 }
 }  // namespace mongo::trial_period
+

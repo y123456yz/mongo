@@ -44,7 +44,8 @@ namespace mongo {
  * A configurable thread pool, for general use.
  *
  * See the Options struct for information about how to configure an instance.
- */
+ */  //NetworkInterfaceThreadPool   ThreadPool继承该ThreadPoolInterface类，代表一个线程池
+ //参考makeShardingFixedTaskExecutor初始化一个ThreadPool线程池
 class ThreadPool final : public ThreadPoolInterface {
 public:
     /**
@@ -66,7 +67,7 @@ public:
         // Set maxThreads to this if you don't want to limit the number of threads in the pool.
         // Note: the value used here is high enough that it will never be reached, but low enough
         // that it won't cause overflows if mixed with signed ints or math.
-        static constexpr size_t kUnlimited = 1'000'000'000;
+        static constexpr size_t kUnlimited = 1000000000;
 
         Options() = default;
 

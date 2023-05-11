@@ -443,7 +443,7 @@ size_t CollectionShardingRuntime::numberOfRangesScheduledForDeletion() const {
     return 0;
 }
 
-//onShardVersionMismatch 
+//onShardVersionMismatch  标记正在刷路由
 void CollectionShardingRuntime::setShardVersionRecoverRefreshFuture(SharedSemiFuture<void> future,
                                                                     const CSRLock&) {
     invariant(!_shardVersionInRecoverOrRefresh);
@@ -456,6 +456,8 @@ CollectionShardingRuntime::getShardVersionRecoverRefreshFuture(OperationContext*
     return _shardVersionInRecoverOrRefresh;
 }
 
+
+//recoverRefreshShardVersion  取消刷路由标记，当获取到路由后
 void CollectionShardingRuntime::resetShardVersionRecoverRefreshFuture(const CSRLock&) {
     invariant(_shardVersionInRecoverOrRefresh);
     _shardVersionInRecoverOrRefresh = boost::none;

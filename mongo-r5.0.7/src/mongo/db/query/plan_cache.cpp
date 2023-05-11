@@ -170,7 +170,7 @@ CachedSolution::CachedSolution(const PlanCacheEntry& entry)
 //
 // PlanCacheEntry
 //
-
+//PlanCache::set中使用赋值
 std::unique_ptr<PlanCacheEntry> PlanCacheEntry::create(
     const std::vector<QuerySolution*>& solutions,
     std::unique_ptr<const plan_ranker::PlanRankingDecision> decision,
@@ -437,10 +437,11 @@ PlanCache::PlanCache(size_t size) : _cache(size) {}
 
 PlanCache::~PlanCache() {}
 
+//QueryPlanner::planSubqueries   //PrepareExecutionHelper::prepare()
 std::unique_ptr<CachedSolution> PlanCache::getCacheEntryIfActive(const PlanCacheKey& key) const {
     PlanCache::GetResult res = get(key);
     if (res.state == PlanCache::CacheEntryState::kPresentInactive) {
-        LOGV2_DEBUG(20936,
+        LOGV2_DEBUG(20936, //走到这里说明不走plancache, 因为状态为inactive
                     2,
                     "Not using cached entry since it is inactive",
                     "cacheKey"_attr = redact(key.toString()));
@@ -455,7 +456,7 @@ std::unique_ptr<CachedSolution> PlanCache::getCacheEntryIfActive(const PlanCache
  * whether:
  * - We should create a new entry
  * - The new entry should be marked 'active'
- */
+ */ //PlanCache::set
 PlanCache::NewEntryState PlanCache::getNewEntryState(const CanonicalQuery& query,
                                                      uint32_t queryHash,
                                                      uint32_t planCacheKey,
@@ -464,6 +465,7 @@ PlanCache::NewEntryState PlanCache::getNewEntryState(const CanonicalQuery& query
                                                      double growthCoefficient) {
     NewEntryState res;
     if (!oldEntry) {
+        //一类请求第一次查询进来的时候走这里
         LOGV2_DEBUG(20937,
                     1,
                     "Creating inactive cache entry for query",
@@ -528,6 +530,7 @@ PlanCache::NewEntryState PlanCache::getNewEntryState(const CanonicalQuery& query
         // Don't create a new entry.
         res.shouldBeCreated = false;
     } else {
+        //一类请求的第一个SQL会生成执行计划缓存起来，如果这类SQL第二次请求进来，并且work数不大于第一次，则标识这个缓存起来的plancache正式有效active的
         // This plan performed just as well or better than we expected, based on the
         // inactive entry's works. We use this as an indicator that it's safe to
         // cache (as an active entry) the plan this query used for the future.
@@ -547,7 +550,8 @@ PlanCache::NewEntryState PlanCache::getNewEntryState(const CanonicalQuery& query
     return res;
 }
 
-
+//配合阅读PrepareExecutionHelper::prepare() ，prepare中判断是否使用缓存的planCache，还是重新生成新的planCache
+//MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
 Status PlanCache::set(const CanonicalQuery& query,
                       const std::vector<QuerySolution*>& solns,
                       std::unique_ptr<plan_ranker::PlanRankingDecision> why,
@@ -577,6 +581,7 @@ Status PlanCache::set(const CanonicalQuery& query,
     }
 
     auto newWorks =
+        //参考https://blog.csdn.net/qq_39384184/article/details/127371388
         stdx::visit(visit_helper::Overloaded{[](const plan_ranker::StatsDetails& details) {
                                                  return details.candidatePlanStats[0]->common.works;
                                              },

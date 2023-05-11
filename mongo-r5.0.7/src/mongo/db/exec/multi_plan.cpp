@@ -82,6 +82,7 @@ MultiPlanStage::MultiPlanStage(ExpressionContext* expCtx,
       _bestPlanIdx(kNoSuchPlan),
       _backupPlanIdx(kNoSuchPlan) {}
 
+//PrepareExecutionHelper::prepare()-> buildMultiPlan->MultiPlanStage::addPlan
 void MultiPlanStage::addPlan(std::unique_ptr<QuerySolution> solution,
                              std::unique_ptr<PlanStage> root,
                              WorkingSet* ws) {
@@ -158,16 +159,25 @@ void MultiPlanStage::tryYield(PlanYieldPolicy* yieldPolicy) {
     }
 }
 
+//配合阅读PrepareExecutionHelper::prepare() ，prepare中判断是否使用缓存的planCache，还是重新生成新的planCache
+//MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
+
+//PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)->MultiPlanStage::pickBestPlan->MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
+
+//PlanExecutorImpl::_pickBestPlan()中调用, MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
 Status MultiPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
     // Adds the amount of time taken by pickBestPlan() to executionTimeMillis. There's lots of
     // execution work that happens here, so this is needed for the time accounting to
     // make sense.
     auto optTimer = getOptTimer();
 
+    //最少10000，最大表数据量*0.3  ?????? 表如果很大
     size_t numWorks = trial_period::getTrialPeriodMaxWorks(opCtx(), collection());
+    //默认值101  "Stop working plans once a plan returns this many results."
     size_t numResults = trial_period::getTrialPeriodNumToReturn(*_query);
 
     try {
+        //根据候选索引，最多扫描numWorks次，如果找到101条满足条件的数据，或者IS_EOF则改候选索引扫描结束
         // Work the plans, stopping when a plan hits EOF or returns some fixed number of results.
         for (size_t ix = 0; ix < numWorks; ++ix) {
             bool moreToDo = workAllPlans(numResults, yieldPolicy);
@@ -180,7 +190,7 @@ Status MultiPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
     }
 
     // After picking best plan, ranking will own plan stats from candidate solutions (winner and
-    // losers).
+    // losers). //对每个候选索引进行评分
     auto statusWithRanking = plan_ranker::pickBestPlan<PlanStageStats>(_candidates);
     if (!statusWithRanking.isOK()) {
         return statusWithRanking.getStatus();
@@ -223,6 +233,7 @@ Status MultiPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
     return Status::OK();
 }
 
+//MultiPlanStage::pickBestPlan
 bool MultiPlanStage::workAllPlans(size_t numResults, PlanYieldPolicy* yieldPolicy) {
     bool doneWorking = false;
 

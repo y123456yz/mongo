@@ -39,6 +39,7 @@ namespace mongo {
 
 const std::string ShardIdentityType::IdName("shardIdentity");
 
+//记录在 db.system.version.find()表中
 StatusWith<ShardIdentityType> ShardIdentityType::fromShardIdentityDocument(const BSONObj& source) {
     if (!source.hasField("_id")) {
         return {ErrorCodes::NoSuchKey,

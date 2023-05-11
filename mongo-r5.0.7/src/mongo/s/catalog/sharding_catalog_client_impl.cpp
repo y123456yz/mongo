@@ -28,6 +28,9 @@
  */
 
 #define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+#define LOGV2_FOR_CATALOG_REFRESH(ID, DLEVEL, MESSAGE, ...) \
+    LOGV2_DEBUG_OPTIONS(                                    \
+        ID, DLEVEL, {logv2::LogComponent::kShardingCatalogRefresh}, MESSAGE, ##__VA_ARGS__)
 
 #include "mongo/platform/basic.h"
 
@@ -143,6 +146,8 @@ AggregateCommandRequest makeCollectionAndChunksAggregation(OperationContext* opC
     StringMap<ExpressionContext::ResolvedNamespace> resolvedNamespaces;
     resolvedNamespaces[CollectionType::ConfigNS.coll()] = {CollectionType::ConfigNS,
                                                            std::vector<BSONObj>()};
+
+    //"config.chunks"
     resolvedNamespaces[ChunkType::ConfigNS.coll()] = {ChunkType::ConfigNS, std::vector<BSONObj>()};
     expCtx->setResolvedNamespaces(resolvedNamespaces);
 
@@ -733,6 +738,7 @@ StatusWith<std::vector<ChunkType>> ShardingCatalogClientImpl::getChunks(
     return chunks;
 }
 
+//getChangedChunks
 std::pair<CollectionType, std::vector<ChunkType>> ShardingCatalogClientImpl::getCollectionAndChunks(
     OperationContext* opCtx,
     const NamespaceString& nss,
@@ -753,31 +759,77 @@ std::pair<CollectionType, std::vector<ChunkType>> ShardingCatalogClientImpl::get
         aggRequest.setMaxTimeMS(durationCount<Milliseconds>(maxTimeMS));
     }
 
+
     // Run the aggregation
     std::vector<BSONObj> aggResult;
     auto callback = [&aggResult](const std::vector<BSONObj>& batch,
                                  const boost::optional<BSONObj>& postBatchResumeToken) {
+
+            LOGV2_FOR_CATALOG_REFRESH(
+        241081,
+        0,
+        "ShardingCatalogClientImpl::getCollectionAndChunks insert 1111, {namepspace}",
+        
+        "namespace"_attr = "sssssssss test");                         
         aggResult.insert(aggResult.end(),
                          std::make_move_iterator(batch.begin()),
                          std::make_move_iterator(batch.end()));
+
+            LOGV2_FOR_CATALOG_REFRESH(
+        241081,
+        0,
+        "ShardingCatalogClientImpl::getCollectionAndChunks insert 22222222, {namepspace}",
+        "namespace"_attr = "sssssssss test");   
+            
         return true;
     };
 
+    LOGV2_FOR_CATALOG_REFRESH(
+        241081,
+        0,
+        "ShardingCatalogClientImpl::getCollectionAndChunks 22222222, {namepspace}",
+        "namespace"_attr = nss);
+
     const auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
     for (int retry = 1; retry <= kMaxWriteRetry; retry++) {
+        //ShardRemote::runAggregation
         const Status status = configShard->runAggregation(opCtx, aggRequest, callback);
+               LOGV2_FOR_CATALOG_REFRESH(
+        241081,
+        0,
+        "ShardingCatalogClientImpl::getCollectionAndChunks aggregate error befor, {namepspace}",
+        "namespace"_attr = nss);
         if (retry < kMaxWriteRetry &&
             configShard->isRetriableError(status.code(), Shard::RetryPolicy::kIdempotent)) {
             aggResult.clear();
+
+       LOGV2_FOR_CATALOG_REFRESH(
+        241081,
+        0,
+        "ShardingCatalogClientImpl::getCollectionAndChunks aggregate error 11111, {status11}",
+        "status11"_attr = status.toString());
             continue;
         }
         uassertStatusOK(status);
+
+
+        LOGV2_FOR_CATALOG_REFRESH(
+         241081,
+         0,
+         "ShardingCatalogClientImpl::getCollectionAndChunks aggregate error 2222, {status11}",
+         "status11"_attr = status.toString());
+
         break;
     }
 
     uassert(ErrorCodes::NamespaceNotFound,
             stream() << "Collection " << nss.ns() << " not found",
             !aggResult.empty());
+    LOGV2_FOR_CATALOG_REFRESH(
+        241081,
+        0,
+        "ShardingCatalogClientImpl::getCollectionAndChunks 3333333333, {namepspace}",
+        "namespace"_attr = nss);
 
 
     // The aggregation may return the config.collections document anywhere between the
@@ -822,6 +874,11 @@ std::pair<CollectionType, std::vector<ChunkType>> ShardingCatalogClientImpl::get
                 stream() << "No chunks were found for the collection " << nss,
                 !chunks.empty());
     }
+    LOGV2_FOR_CATALOG_REFRESH(
+        241081,
+        0,
+        "ShardingCatalogClientImpl::getCollectionAndChunks 55555555555, {namepspace}",
+        "namespace"_attr = nss);
 
 
     return {std::move(*coll), std::move(chunks)};

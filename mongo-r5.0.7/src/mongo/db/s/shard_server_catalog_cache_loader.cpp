@@ -53,6 +53,7 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/fail_point.h"
+#include "mongo/util/timer.h"
 
 namespace mongo {
 
@@ -489,8 +490,21 @@ SemiFuture<CollectionAndChangedChunks> ShardServerCatalogCacheLoader::getChunksS
                         _term == term);
             }
 
+			LOGV2_FOR_CATALOG_REFRESH(
+				241081,
+				0,
+				"ShardServerCatalogCacheLoader::getChunksSince begin, {namepspace}",
+				"namespace"_attr = nss);
+
             if (isPrimary) {
-                return _schedulePrimaryGetChunksSince(context.opCtx(), nss, version, term);
+                auto& status = _schedulePrimaryGetChunksSince(context.opCtx(), nss, version, term);
+                LOGV2_FOR_CATALOG_REFRESH(
+    				241083,
+    				0,
+    				"ShardServerCatalogCacheLoader::getChunksSince end, {namepspace}",
+    				"namespace"_attr = nss);
+                return status;
+                //return _schedulePrimaryGetChunksSince(context.opCtx(), nss, version, term);
             } else {
                 return _runSecondaryGetChunksSince(context.opCtx(), nss, version);
             }
@@ -693,6 +707,7 @@ ShardServerCatalogCacheLoader::_schedulePrimaryGetChunksSince(
     const ChunkVersion& catalogCacheSinceVersion,
     long long termScheduled) {
 
+	Timer t{};
     // Get the max version the loader has.
     const ChunkVersion maxLoaderVersion = [&] {
         {
@@ -709,6 +724,7 @@ ShardServerCatalogCacheLoader::_schedulePrimaryGetChunksSince(
         // If there are no enqueued tasks, get the max persisted
         return getPersistedMaxChunkVersion(opCtx, nss);
     }();
+
 
     // Refresh the loader's metadata from the config server. The caller's request will
     // then be serviced from the loader's up-to-date metadata.
@@ -730,7 +746,8 @@ ShardServerCatalogCacheLoader::_schedulePrimaryGetChunksSince(
             "{oldCollectionVersion} and no metadata was found",
             "Cache loader remotely refreshed for collection and no metadata was found",
             "namespace"_attr = nss,
-            "oldCollectionVersion"_attr = maxLoaderVersion);
+            "oldCollectionVersion"_attr = maxLoaderVersion,
+            "duration"_attr = Milliseconds(t.millis()));
         return swCollectionAndChangedChunks;
     }
 
@@ -767,11 +784,12 @@ ShardServerCatalogCacheLoader::_schedulePrimaryGetChunksSince(
         LOGV2_FOR_CATALOG_REFRESH(5310400,
                                   1,
                                   "Cache loader update metadata format for collection {namespace}"
-                                  "{oldTimestamp} and {newTimestamp}",
+                                  "{oldTimestamp} and {newTimestamp} cost {duration}",
                                   "Cache loader update metadata format for collection",
                                   "namespace"_attr = nss,
                                   "oldTimestamp"_attr = maxLoaderVersion.getTimestamp(),
-                                  "newTimestamp"_attr = collAndChunks.creationTime);
+                                  "newTimestamp"_attr = collAndChunks.creationTime,
+                                  "duration"_attr = Milliseconds(t.millis()));
     }
 
     if ((collAndChunks.epoch != maxLoaderVersion.epoch()) ||
@@ -786,11 +804,13 @@ ShardServerCatalogCacheLoader::_schedulePrimaryGetChunksSince(
         24108,
         1,
         "Cache loader remotely refreshed for collection {namespace} from collection version "
-        "{oldCollectionVersion} and found collection version {refreshedCollectionVersion}",
+        "{oldCollectionVersion} and found collection version {refreshedCollectionVersion} "
+        "cost {duration}",
         "Cache loader remotely refreshed for collection",
         "namespace"_attr = nss,
         "oldCollectionVersion"_attr = maxLoaderVersion,
-        "refreshedCollectionVersion"_attr = collAndChunks.changedChunks.back().getVersion());
+        "refreshedCollectionVersion"_attr = collAndChunks.changedChunks.back().getVersion(),
+        "duration"_attr = Milliseconds(t.millis()));
 
     // Metadata was found remotely
     // -- otherwise we would have received NamespaceNotFound rather than Status::OK().
@@ -863,6 +883,7 @@ StatusWith<DatabaseType> ShardServerCatalogCacheLoader::_schedulePrimaryGetDatab
     return swDatabaseType;
 }
 
+//_schedulePrimaryGetChunksSince
 StatusWith<CollectionAndChangedChunks> ShardServerCatalogCacheLoader::_getLoaderMetadata(
     OperationContext* opCtx,
     const NamespaceString& nss,

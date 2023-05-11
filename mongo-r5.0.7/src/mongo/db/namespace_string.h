@@ -42,6 +42,7 @@
 #include "mongo/logv2/log_attr.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/uuid.h"
+#include "mongo/s/is_mongos.h"
 
 namespace mongo {
 
@@ -294,8 +295,88 @@ public:
     bool isSystem() const {
         return coll().startsWith("system.");
     }
+
+/*
+config:
+transactions
+transaction_coordinators
+migrationCoordinators
+tenantMigrationDonors
+tenantMigrationRecipients
+cache.*
+external_validation_keys
+rangeDeletions
+rangeDeletionsForRename
+reshardingOperations
+localReshardingOperations.*
+localRenameParticipants
+vectorClock
+collection_critical_sections
+image_collection
+
+
+
+
+local:
+startup_log
+
+*/
+
     bool isNormalCollection() const {
-        return !isSystem() && !(isLocal() && coll().startsWith("replset."));
+        if (isSystem())
+            return false;
+            
+        if (isLocal() && (coll().startsWith("replset.") || coll() == "startup_log"))
+            return false;
+      
+        if (isConfigDB() 
+            && (coll().startsWith("cache.") || coll().startsWith("localReshardingOperations.")
+                || coll() == "transactions" || coll() == "transaction_coordinators"
+                || coll() == "migrationCoordinators" || coll() == "tenantMigrationDonors"
+                || coll() == "rangeDeletions" || coll() == "rangeDeletionsForRename"
+                || coll() == "tenantMigrationRecipients" || coll() == "external_validation_keys"
+                || coll() == "reshardingOperations" || coll() == "localRenameParticipants"
+                || coll() == "vectorClock" || coll() == "collection_critical_sections"
+                || coll() == "image_collection")) {
+            return false;
+        }
+
+        if (isMongos() || serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+            if (isConfigDB() 
+                && (coll() == "actionlog" || coll() == "changelog"
+                    || coll() == "chunks" || coll() == "collections"
+                    || coll() == "databases" || coll() == "lockpings"
+                    || coll() == "locks" || coll() == "migrations"
+                    || coll() == "mongos" || coll() == "settings"
+                    || coll() == "shards" || coll() == "tags"
+                    || coll() == "transactions" || coll() == "version"
+                    || coll() == "migrations")) {
+                return false;
+            }
+        }
+
+        if (isMongos() || serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+            if (isConfigDB() 
+                && (coll() == "chunks" || coll() == "databases"
+                    || coll() == "collections" || coll() == "shards"
+                    || coll() == "transactions" || coll() == "migrations"
+                    || coll() == "tags" || coll() == "settings"
+                    || coll() == "migrations" || coll() == "locks"
+                    || coll() == "lockpings" || coll() == "version"
+                    || coll() == "mongos" || coll() == "actionlog"
+                    || coll() == "changelog")
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    
+    bool isNormalCollection() const {
+        return !isSystem() && !(isLocal() && (coll().startsWith("replset.") || coll() == "startup_log"))
+            && !(isConfigDB() && coll().startsWith("cache."));
     }
     bool isAdminDB() const {
         return db() == kAdminDb;

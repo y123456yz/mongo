@@ -187,6 +187,8 @@ private:
     friend class ShardServerOpObserver;  // For access to _allowCollectionCreation below
 
     // Specifies whether the request is allowed to create database/collection implicitly
+    //ScopedAllowImplicitCollectionCreate_UNSAFE::ScopedAllowImplicitCollectionCreate_UNSAFE ÷√Œ™true
+    //≤ŒøºImplicitCollectionCreationTest≤‚ ‘
     bool _allowCollectionCreation{false};
 
     // The OperationShardingState class supports storing shardVersions for multiple namespaces (and

@@ -175,6 +175,7 @@ void SessionsCollectionRS::checkSessionsCollectionExists(OperationContext* opCtx
                     (localLogicalSessionTimeoutMinutes * 60));
 }
 
+//LogicalSessionCacheImpl::_refresh
 void SessionsCollectionRS::refreshSessions(OperationContext* opCtx,
                                            const LogicalSessionRecordSet& sessions) {
     const std::vector<LogicalSessionRecord> sessionsVector(sessions.begin(), sessions.end());
@@ -183,9 +184,11 @@ void SessionsCollectionRS::refreshSessions(OperationContext* opCtx,
               opCtx,
               [&] {
                   DBDirectClient client(opCtx);
+                  //SessionsCollection::_doRefresh 封装batch，然后makeSendFnForBatchWrite发送
                   _doRefresh(
                       NamespaceString::kLogicalSessionsNamespace,
                       sessionsVector,
+                      //这里真正发送
                       makeSendFnForBatchWrite(NamespaceString::kLogicalSessionsNamespace, &client));
               },
               [&](DBClientBase* client) {
@@ -205,6 +208,7 @@ void SessionsCollectionRS::removeRecords(OperationContext* opCtx,
         opCtx,
         [&] {
             DBDirectClient client(opCtx);
+            //SessionsCollection::_doRemove 封装batch，然后makeSendFnForBatchWrite发送
             _doRemove(NamespaceString::kLogicalSessionsNamespace,
                       sessionsVector,
                       makeSendFnForBatchWrite(NamespaceString::kLogicalSessionsNamespace, &client));

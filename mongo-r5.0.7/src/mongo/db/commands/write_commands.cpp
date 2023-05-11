@@ -798,6 +798,7 @@ public:
             batchGuard.dismiss();
             return true;
         }
+		
 
         std::tuple<TimeseriesBatches, TimeseriesStmtIds, size_t> _insertIntoBucketCatalog(
             OperationContext* opCtx,

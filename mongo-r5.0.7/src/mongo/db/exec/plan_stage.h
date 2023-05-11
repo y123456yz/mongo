@@ -200,6 +200,7 @@ public:
     StageState work(WorkingSetID* out) {
         auto optTimer(getOptTimer());
 
+        //实际上就是下面的failed+advanced+needTime+needYield之和
         ++_commonStats.works;
 
         StageState workResult;
@@ -210,6 +211,7 @@ public:
             throw;
         }
 
+        
         if (StageState::ADVANCED == workResult) {
             ++_commonStats.advanced;
         } else if (StageState::NEED_TIME == workResult) {

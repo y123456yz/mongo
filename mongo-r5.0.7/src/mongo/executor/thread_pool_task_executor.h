@@ -52,6 +52,9 @@ class NetworkInterface;
 /**
  * Implementation of a TaskExecutor that uses a pool of threads to execute work items.
  */
+//makeShardingTaskExecutor  makeShardingFixedTaskExecutor中构造
+
+//ShardingTaskExecutor._executor为该类型
 class ThreadPoolTaskExecutor final : public TaskExecutor {
     ThreadPoolTaskExecutor(const ThreadPoolTaskExecutor&) = delete;
     ThreadPoolTaskExecutor& operator=(const ThreadPoolTaskExecutor&) = delete;
@@ -209,9 +212,11 @@ private:
     stdx::unique_lock<Latch> _join(stdx::unique_lock<Latch> lk);
 
     // The network interface used for remote command execution and waiting.
+    //NetworkInterfaceTL类型
     std::shared_ptr<NetworkInterface> _net;
 
     // The thread pool that executes scheduled work items.
+    //线程池，对应NetworkInterfaceThreadPool或者ThreadPool
     std::shared_ptr<ThreadPoolInterface> _pool;
 
     // Mutex guarding all remaining fields.

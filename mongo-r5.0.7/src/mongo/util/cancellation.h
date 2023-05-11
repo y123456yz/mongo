@@ -204,7 +204,7 @@ private:
     boost::intrusive_ptr<const detail::CancellationState> _state;
 };
 
-/**
+/** 参考官方说明: https://github.com/mongodb/mongo/blob/5bbadc66ed462aed3cc4f5635c5003da6171c25d/src/mongo/util/README.md
  * Type used to manage the cancellation of a task. CancellationSource is used to cancel a task, and
  * CancellationTokens obtained via CancellationSource::token() are used to check for and handle
  * cancellation.

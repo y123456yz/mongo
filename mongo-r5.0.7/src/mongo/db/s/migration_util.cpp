@@ -524,7 +524,7 @@ void forEachOrphanRange(OperationContext* opCtx, const NamespaceString& nss, Cal
 
     const auto csr = CollectionShardingRuntime::get(opCtx, nss);
     const auto metadata = csr->getCurrentMetadataIfKnown();
-    const auto emptyChunkMap =
+    const auto emptyChunkMap = 
         RangeMap{SimpleBSONObjComparator::kInstance.makeBSONObjIndexedMap<BSONObj>()};
 
     if (!metadata) {

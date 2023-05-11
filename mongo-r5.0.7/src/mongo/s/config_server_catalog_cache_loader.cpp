@@ -28,6 +28,9 @@
  */
 
 #define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+#define LOGV2_FOR_CATALOG_REFRESH(ID, DLEVEL, MESSAGE, ...) \
+    LOGV2_DEBUG_OPTIONS(                                    \
+        ID, DLEVEL, {logv2::LogComponent::kShardingCatalogRefresh}, MESSAGE, ##__VA_ARGS__)
 
 #include "mongo/platform/basic.h"
 
@@ -57,6 +60,12 @@ CollectionAndChangedChunks getChangedChunks(OperationContext* opCtx,
                                             bool avoidSnapshotForRefresh) {
     const auto catalogClient = Grid::get(opCtx)->catalogClient();
 
+    LOGV2_FOR_CATALOG_REFRESH(
+        241081,
+        1,
+        "getChangedChunks befor get config server version, {namepspace}",
+        "namespace"_attr = nss);
+
     const auto readConcernLevel = !avoidSnapshotForRefresh
         ? repl::ReadConcernLevel::kSnapshotReadConcern
         : repl::ReadConcernLevel::kLocalReadConcern;
@@ -69,6 +78,12 @@ CollectionAndChangedChunks getChangedChunks(OperationContext* opCtx,
     auto collAndChunks =
         catalogClient->getCollectionAndChunks(opCtx, nss, sinceVersion, readConcern);
     const auto& coll = collAndChunks.first;
+
+    LOGV2_FOR_CATALOG_REFRESH(
+        241081,
+        1,
+        "getChangedChunks after get config server version, {namepspace}",
+        "namespace"_attr = nss);
     return CollectionAndChangedChunks{coll.getEpoch(),
                                       coll.getTimestamp(),
                                       coll.getUuid(),
@@ -139,19 +154,14 @@ SemiFuture<CollectionAndChangedChunks> ConfigServerCatalogCacheLoader::getChunks
         .semi();
 }
 
-//CatalogCache::DatabaseCache::_lookupDatabase 获取getDatabaseVersion对应的databaseVersion
-//从"config.databases"获取db版本信息，shard server才支持，，只能从mongod运行db.adminCommand({getDatabaseVersion :"dbxx"}) 
 SemiFuture<DatabaseType> ConfigServerCatalogCacheLoader::getDatabase(StringData dbName) {
     return ExecutorFuture<void>(_executor)
         .then([name = dbName.toString()] {
             ThreadClient tc("ConfigServerCatalogCacheLoader::getDatabase",
                             getGlobalServiceContext());
             auto opCtx = tc->makeOperationContext();
-			// ShardingCatalogClient* catalogClient()
             return Grid::get(opCtx.get())
                 ->catalogClient()
-                //ShardingCatalogClientImpl::getDatabase
-                //从"config.databases"获取db版本信息，shard server才支持，，只能从mongod运行db.adminCommand({getDatabaseVersion :"dbxx"}) 
                 ->getDatabase(opCtx.get(), name, repl::ReadConcernLevel::kMajorityReadConcern);
         })
         .semi();

@@ -34,6 +34,7 @@
 
 namespace mongo {
 
+//主要是记录一个chunk对应的数据有多少，从而判断是否可以splite，参考shouldSplit
 class ChunkWritesTracker {
 public:
     /**
@@ -51,7 +52,7 @@ public:
 
     /**
      * Returns the total number of bytes that have been written to the chunk.
-     */
+     */ //生效使用见ChunkWritesTracker::shouldSplit
     uint64_t getBytesWritten() {
         return _bytesWritten.loadRelaxed();
     }

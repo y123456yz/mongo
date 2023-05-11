@@ -368,7 +368,7 @@ void Explain::explainStages(PlanExecutor* exec,
     explain_common::generateServerParameters(out);
 }
 
-
+//db.orders.getPlanCache().list()
 void Explain::planCacheEntryToBSON(const PlanCacheEntry& entry, BSONObjBuilder* out) {
     out->append("queryHash", zeroPaddedHex(entry.queryHash));
     out->append("planCacheKey", zeroPaddedHex(entry.planCacheKey));

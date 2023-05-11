@@ -211,11 +211,17 @@ TEST(BSONObjBuilderTest, ResetToEmptyResultsInEmptyObj) {
     ASSERT_BSONOBJ_EQ(BSONObj(), bob.obj());
 }
 
+//参考db.adminCommand({getShardVersion :"yyz.yyz1", fullMetadata: true})
 TEST(BSONObjBuilderTest, ResetToEmptyForNestedBuilderOnlyResetsInnerObj) {
     BSONObjBuilder bob;
     bob.append("a", 3);
+    //下面这行后的bson内容
+    /* {a:1, "nestedObj":[b:4]} */ 
     BSONObjBuilder innerObj(bob.subobjStart("nestedObj"));
     innerObj.append("b", 4);
+
+    //下面这行后的bson内容
+     /* {a:1, "nestedObj":{} */
     innerObj.resetToEmpty();
     innerObj.done();
     ASSERT_BSONOBJ_EQ(BSON("a" << 3 << "nestedObj" << BSONObj()), bob.obj());

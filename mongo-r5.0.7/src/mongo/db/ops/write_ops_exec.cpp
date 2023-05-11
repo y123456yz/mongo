@@ -232,16 +232,24 @@ void makeCollection(OperationContext* opCtx, const NamespaceString& ns) {
         AutoGetDb autoDb(opCtx, ns.db(), MODE_IX);
         Lock::CollectionLock collLock(opCtx, ns, MODE_IX);
 
+        /*const auto& oss = OperationShardingState::get(opCtx);
+        uassert(CannotImplicitlyCreateCollectionInfo(collectionName),
+                "Implicit collection creation on a sharded cluster must go through the "
+                "CreateCollectionCoordinator",
+                oss._allowCollectionCreation);*/
+
         assertCanWrite_inlock(opCtx, ns);
         if (!CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(
                 opCtx,
                 ns)) {  // someone else may have beat us to it.
             uassertStatusOK(userAllowedCreateNS(opCtx, ns));
+            //这里面会把_allowCollectionCreation置为ture，表示允许隐式表创建
             OperationShardingState::ScopedAllowImplicitCollectionCreate_UNSAFE
                 unsafeCreateCollection(opCtx);
             WriteUnitOfWork wuow(opCtx);
             CollectionOptions defaultCollectionOptions;
             auto db = autoDb.ensureDbExists();
+            //DatabaseImpl::userCreateNS
             uassertStatusOK(db->userCreateNS(opCtx, ns, defaultCollectionOptions));
             wuow.commit();
         }
@@ -403,6 +411,7 @@ void assertTimeseriesBucketsCollectionNotFound(const NamespaceString& ns) {
 /**
  * Returns true if caller should try to insert more documents. Does nothing else if batch is empty.
  */
+//insertBatchAndHandleErrors  performSingleUpdateOp 一个update，一个insert
 bool insertBatchAndHandleErrors(OperationContext* opCtx,
                                 const write_ops::InsertCommandRequest& wholeOp,
                                 std::vector<InsertStatement>& batch,
@@ -716,6 +725,7 @@ WriteResult performInserts(OperationContext* opCtx,
     return out;
 }
 
+//insertBatchAndHandleErrors  performSingleUpdateOp 一个update，一个insert
 static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
                                                const NamespaceString& ns,
                                                UpdateRequest* updateRequest,

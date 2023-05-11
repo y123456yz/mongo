@@ -82,12 +82,13 @@ struct CommonStats {
     const char* stageTypeStr;
 
     // Count calls into the stage.
-    size_t works;
+    size_t works; //等于advanced+needTime+needYield+failed+isEOF
     size_t yields;
     size_t unyields;
 
     // How many times was this state the return value of work(...)?
-    size_t advanced;
+    //StageState work(WorkingSetID* out) 
+    size_t advanced; //走索引的统计
     size_t needTime;
     size_t needYield;
 
@@ -112,6 +113,7 @@ struct CommonStats {
     // TODO: keep track of the total yield time / fetch time done for a plan.
 
     bool failed;
+    //trackPlanState
     bool isEOF;
 };
 

@@ -415,7 +415,7 @@ public:
 
     /**
      * Invalidates all cached entries and in progress lookups with keys that matches the preidcate.
-     */
+     */ //invalidateAll
     template <typename Pred>
     void invalidateKeyIf(const Pred& predicate) {
         stdx::lock_guard lg(_mutex);
@@ -430,7 +430,7 @@ public:
 
     /**
      * Invalidates all cached entries with stored values that matches the preidcate.
-     */
+     */ //invalidateEntriesThatReferenceShard
     template <typename Pred>
     void invalidateCachedValueIf(const Pred& predicate) {
         stdx::lock_guard lg(_mutex);

@@ -49,7 +49,8 @@ class NetworkInterface;
  * The basic idea is to triage tasks, running them immediately if we're invoked
  * from on the network interface thread, and queueing them up to be drained by
  * a setAlarm if not.
- */
+ */  //NetworkInterfaceThreadPool   ThreadPool继承该ThreadPoolInterface类，代表一个线程池
+////makeShardingTaskExecutor中构造
 class NetworkInterfaceThreadPool final : public ThreadPoolInterface {
 public:
     NetworkInterfaceThreadPool(NetworkInterface* net);
@@ -65,6 +66,7 @@ private:
     void _consumeTasksInline(stdx::unique_lock<Latch> lk) noexcept;
     void _dtorImpl();
 
+    //NetworkInterfaceTL
     NetworkInterface* const _net;
 
     // Protects all of the pool state below

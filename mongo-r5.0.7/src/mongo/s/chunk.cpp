@@ -111,6 +111,17 @@ bool ChunkInfo::containsKey(const BSONObj& shardKey) const {
     return getMin().woCompare(shardKey) <= 0 && shardKey.woCompare(getMax()) < 0;
 }
 
+/*
+{"t":{"$date":"2022-09-17T13:11:07.219+08:00"},"s":"I",  "c":"SHARDING", "id":22753,   "ctx":"conn30575",
+"msg":"Routing info requested by getShardVersion","attr":{"routingInfo":"RoutingTableHistory: yyz.yyz1 key: 
+{ bookId: \"hashed\" }\nChunks:\n\tshard: mongodb_5.0_shard1, lastmod: 1|0||632556c15fcc6dccc6f7f57a||Timestamp(1663391425, 12), 
+[{ bookId: MinKey }, { bookId: -4611686018427387902 })\n\tshard: mongodb_5.0_shard1, lastmod: 1|1||632556c15fcc6dccc6f7f57a||
+Timestamp(1663391425, 12), [{ bookId: -4611686018427387902 }, { bookId: 0 })\n\tshard: mongodb_5.0_shard2, lastmod: 1|2||
+632556c15fcc6dccc6f7f57a||Timestamp(1663391425, 12), [{ bookId: 0 }, { bookId: 4611686018427387902 })\n\tshard: 
+mongodb_5.0_shard2, lastmod: 1|3||632556c15fcc6dccc6f7f57a||Timestamp(1663391425, 12), [{ bookId: 4611686018427387902 }, 
+{ bookId: MaxKey })\nShard versions:\n\tmongodb_5.0_shard1: 1|1||632556c15fcc6dccc6f7f57a||Timestamp(1663391425, 12)\n\t
+mongodb_5.0_shard2: 1|3||632556c15fcc6dccc6f7f57a||Timestamp(1663391425, 12)\n"}}
+*/
 //RoutingTableHistory::toString()   ChunkMap::toBSON()
 std::string ChunkInfo::toString() const {
     return str::stream() << ChunkType::shard() << ": " << _shardId << ", " << ChunkType::lastmod()

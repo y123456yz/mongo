@@ -93,6 +93,7 @@ inline constexpr bool isFutureLike<SharedSemiFuture<T>> = true;
 // whether or not the type is a container by the presense of a value_type field. After we switch to
 // C++20 we can use the Container concept for this instread.
 template <typename T, typename = void>
+//C++ STL的std::is_copy_constructible模板用于检查T是否可复制构造。如果T是可复制构造类型，则返回布尔值true，否则返回false。
 struct is_really_copy_constructible : std::is_copy_constructible<T> {};
 template <typename T>
 struct is_really_copy_constructible<T, std::void_t<typename T::value_type>>
@@ -361,6 +362,7 @@ enum class SSBState : uint8_t {
 
 class SharedStateBase : public RefCountable {
 public:
+    //也就是顺序链表存储SharedStateBase
     using Children = std::forward_list<boost::intrusive_ptr<SharedStateBase>>;
 
     SharedStateBase(const SharedStateBase&) = delete;

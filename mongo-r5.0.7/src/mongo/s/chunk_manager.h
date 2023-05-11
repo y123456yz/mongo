@@ -57,103 +57,193 @@ struct ShardVersionTargetingInfo {
     // Indicates whether the shard is stale and thus needs a catalog cache refresh
     AtomicWord<bool> isStale{false};
 
+    //chunk count for the shard
+    AtomicWord<int> count{0};
     // Max chunk version for the shard
     ChunkVersion shardVersion;
 
+    //solve porblem  "error: use of deleted function 'std::atomic<bool>::atomic(const std::atomic<bool>&)'"
+    ShardVersionTargetingInfo(const ShardVersionTargetingInfo& info) {
+        bool state = info.isStale.load();
+        isStale.store(state);
+        shardVersion = info.shardVersion;
+
+        count.store(info.count.load());
+    }
     ShardVersionTargetingInfo(const OID& epoch, const boost::optional<Timestamp>& timestamp);
 };
 
-// Map from a shard to a struct indicating both the max chunk version on that shard and whether the
-// shard is currently marked as needing a catalog cache refresh (stale).
 
-//一个表对应一个CollectionShardingRuntime，CollectionShardingRuntime->MetadataManager->CollectionMetadataTracker
-//  ->CollectionMetadata->ChunkManager->RoutingTableHistoryValueHandle(OptionalRoutingTableHistory)->
-//  ->RoutingTableHistory->ChunkMap+ShardVersionMap+片建等
-
-
-//RoutingTableHistory._chunkMap,记录分片表所有得chunks信息
-//RoutingTableHistory._shardVersions,记录分片表某个分片上面得shardversion信息
-
-//该表在某个分片上面的shardversion
 using ShardVersionMap = stdx::unordered_map<ShardId, ShardVersionTargetingInfo, ShardId::Hasher>;
+
+// Vector of chunks ordered by max key.
+using ChunkVector = std::vector<std::shared_ptr<ChunkInfo>>;
+using MapChunkVector = std::map<std::string, std::shared_ptr<ChunkVector>>;
 
 /**
  * This class serves as a Facade around how the mapping of ranges to chunks is represented. It also
  * provides a simpler, high-level interface for domain specific operations without exposing the
  * underlying implementation.
  */
-//一个表对应一个CollectionShardingRuntime，CollectionShardingRuntime->MetadataManager->CollectionMetadataTracker
-//  ->CollectionMetadata->ChunkManager->RoutingTableHistoryValueHandle(OptionalRoutingTableHistory)->
-//  ->RoutingTableHistory->ChunkMap+ShardVersionMap+片建等
-
- 
-//RoutingTableHistory._chunkMap,记录分片表所有得chunks信息
-//RoutingTableHistory._shardVersions,记录分片表某个分片上面得shardversion信息
 class ChunkMap {
-    // Vector of chunks ordered by max key.
-    using ChunkVector =std::vector<std::shared_ptr<ChunkInfo>>;
-
 public:
-    //makeUpdatedReplacingTimestamp  RoutingTableHistory::makeNew
     explicit ChunkMap(OID epoch,
-                      const boost::optional<Timestamp>& timestamp,
+                      const boost::optional<Timestamp>& timestamp, 
+                      long unsigned int vecterDdepthSize = 1000,
                       size_t initialCapacity = 0)
         : _collectionVersion(0, 0, epoch, timestamp), _collTimestamp(timestamp) {
-        _chunkMap.reserve(initialCapacity);
+        maxVectorVerticalDepthSize = vecterDdepthSize;
+    }
+    
+    explicit ChunkMap(const MapChunkVector& chunkMap,
+                          const ChunkVersion& collectionVersion,
+                          const ShardVersionMap& shardVersions,
+                          const boost::optional<Timestamp>& timestamp,
+                          long unsigned int vecterDdepthSize = 1000
+                      )
+        : _collTimestamp(timestamp) {
+         _chunkMap = chunkMap;
+         _collectionVersion = collectionVersion;
+         _shardVersions = shardVersions;
+         maxVectorVerticalDepthSize = vecterDdepthSize;
+    }
+    
+    void setMaxVectorVerticalDepthSize(long unsigned int vecterDdepthSize) {
+        maxVectorVerticalDepthSize = vecterDdepthSize;
+    }
+
+    long unsigned int getMaxVectorVerticalDepthSize() const {
+        return maxVectorVerticalDepthSize;
     }
 
     size_t size() const {
-        return _chunkMap.size();
+        return totalChunksNum();
     }
 
-    // Max version across all chunks ,chunkmap中最大的版本号
+    // Max version across all chunks 
     ChunkVersion getVersion() const {
         return _collectionVersion;
     }
 
+    ShardVersionMap getShardVersion() const {
+        return _shardVersions;
+    }
+
+    MapChunkVector getChunkMap() const {
+        return _chunkMap;
+    }
+
     template <typename Callable>
     void forEach(Callable&& handler, const BSONObj& shardKey = BSONObj()) const {
-        auto it = shardKey.isEmpty() ? _chunkMap.begin() : _findIntersectingChunk(shardKey);
+        if (shardKey.isEmpty()) {
+    		for (const auto& mapIt : _chunkMap) {
+    		    auto second = *mapIt.second;
+                for (auto it = second.begin(); it != second.end(); ++it) {
+                    if (!handler(*it))
+                        break;
+                }
+            }
 
-        for (; it != _chunkMap.end(); ++it) {
-            if (!handler(*it))
-                break;
+    		return;
+        }
+
+        auto shardKeyString = ShardKeyPattern::toKeyString(shardKey);
+	
+        const auto itMin = _chunkMap.lower_bound(shardKeyString);
+        for (auto mapIt = itMin; mapIt != _chunkMap.end(); mapIt++) {
+            auto second = mapIt->second;
+            if (mapIt == itMin) {
+                auto it = _findIntersectingChunkIterator(shardKey, second);
+                for (; it != second->end(); ++it) {
+                    if (!handler(*it))
+                        return;
+                } 
+
+                continue;
+            }
+            
+            for (auto it = second->begin(); it != second->end(); ++it) {
+                if (!handler(*it))
+                    return;
+            }
         }
     }
+
 
     template <typename Callable>
     void forEachOverlappingChunk(const BSONObj& min,
                                  const BSONObj& max,
                                  bool isMaxInclusive,
                                  Callable&& handler) const {
-        const auto bounds = _overlappingBounds(min, max, isMaxInclusive);
-
+        const auto bounds = _overlappingVectorSlotBounds(min, max, isMaxInclusive);
         for (auto it = bounds.first; it != bounds.second; ++it) {
-            if (!handler(*it))
-                break;
+            auto boundsInSecondaryIndex = _overlappingBounds(min, max, isMaxInclusive, it->second);
+            for (auto itSecond = boundsInSecondaryIndex.first; 
+                itSecond != boundsInSecondaryIndex.second; ++itSecond) {
+                    auto chunkInfo = *itSecond;
+                    if (!handler(*itSecond))
+                         break;
+            }
         }
     }
 
-    ShardVersionMap constructShardVersionMap() const;
+    void constructShardVersionMap(const std::vector<std::shared_ptr<ChunkInfo>>& changedChunks);
+    MapChunkVector& getMapChunkVector();
     std::shared_ptr<ChunkInfo> findIntersectingChunk(const BSONObj& shardKey) const;
 
-    void appendChunk(const std::shared_ptr<ChunkInfo>& chunk);
+    void appendChunk(ChunkVector& chunkMap, const std::shared_ptr<ChunkInfo>& chunk);
 
-    ChunkMap createMerged(const std::vector<std::shared_ptr<ChunkInfo>>& changedChunks) const;
+    void createMerged(const ChunkMap& oldChunkMap, const std::vector<std::shared_ptr<ChunkInfo>>& changedChunks,
+                      const NamespaceString& nss, bool isUpdate);
+    int totalChunksNum() const;
 
     BSONObj toBSON() const;
+    void constructShardVersionsByChunk(const std::shared_ptr<ChunkInfo>& chunk, 
+                                             const OID& epoch, boost::optional<Timestamp> timestamp, 
+                                             bool needIncCount);
 
 private:
-    ChunkVector::const_iterator _findIntersectingChunk(const BSONObj& shardKey,
+    std::shared_ptr<ChunkInfo> _findIntersectingChunk(const BSONObj& shardKey,
                                                        bool isMaxInclusive = true) const;
-    std::pair<ChunkVector::const_iterator, ChunkVector::const_iterator> _overlappingBounds(
-        const BSONObj& min, const BSONObj& max, bool isMaxInclusive) const;
+    ChunkVector::const_iterator _findIntersectingChunkIterator(const BSONObj& shardKey,
+															   std::shared_ptr<ChunkVector> vector,
+                                                               bool isMaxInclusive = true) const;
 
-    ChunkVector _chunkMap;
+    std::pair<MapChunkVector::const_iterator, MapChunkVector::const_iterator> 
+        _overlappingVectorSlotBounds(const mongo::BSONObj& min,
+                                          const mongo::BSONObj& max,
+                                          bool isMaxInclusive) const;
+    std::pair<ChunkVector::const_iterator, ChunkVector::const_iterator>
+        _overlappingBounds(const BSONObj& min, const BSONObj& max, 
+                            bool isMaxInclusive,
+                            std::shared_ptr<ChunkVector> vect) const;
+    std::string toString() const;
+    void makeNew(const ChunkVector& changedChunks);
+    void makeUpdated(const ChunkMap& oldChunkMAp, const ChunkVector& changedChunks);
+    void mergeChunkMap(const ChunkMap& oldChunkMap, ChunkMap& changeChunkMap);
+    void chunkRangeValidateCheck(const ChunkVector& changedChunks);
+    bool mergeOverlapMapVectorChunk(const mongo::BSONObj& min, 
+                                         const mongo::BSONObj& max, 
+                                         ChunkVector& chunkVector);
+    void mergeTowChunkVector(const ChunkVector& changeChunks, 
+                               const ChunkVector& oldVectorChunks, 
+                               ChunkVector& updateChunk);
+    void minKeyMaxKeyValidateCheck(void) const;
+    void splitChunkVector(ChunkVector& chunkVector);
+    void eraseShardVersionMapElem(ShardVersionMap& oldShardVersionsMap, 
+                                    ShardVersionMap& newShardVersionsMap);
+    ShardVersionMap constructTempShardVersionMapCount(const ChunkVector& changedChunks); 
+
+    MapChunkVector _chunkMap;
+    int _maxSizeSingleChunksMap;
 
     // Max version across all chunks
-    //该表所有分片中最大的chunk version，也就是_chunkMap中最大的version，赋值参考ChunkMap::appendChunk
     ChunkVersion _collectionVersion;
+    // The representation of shard versions and staleness indicators for this namespace. If a
+    // shard does not exist, it will not have an entry in the map.
+    // Note: this declaration must not be moved before _chunkMap since it is initialized by using
+    // the _chunkMap instance.
+    ShardVersionMap _shardVersions;  
 
     // Represents the timestamp present in config.collections for this ChunkMap.
     //
@@ -162,19 +252,13 @@ private:
     // config.collections entry doesn't. In this case, the chunks timestamp should be ignored when
     // computing the collection version and we should use _collTimestamp instead.
     boost::optional<Timestamp> _collTimestamp;
+    long unsigned int maxVectorVerticalDepthSize;
 };
 
 /**
  * In-memory representation of the routing table for a single sharded collection at various points
  * in time.
  */
-//一个表对应一个CollectionShardingRuntime，CollectionShardingRuntime->MetadataManager->CollectionMetadataTracker
-//  ->CollectionMetadata->ChunkManager->RoutingTableHistoryValueHandle(OptionalRoutingTableHistory)->
-//  ->RoutingTableHistory->ChunkMap+ShardVersionMap+片建等
-
- 
-//RoutingTableHistory记录一个分片表的表名、uuid、片建信息、路由chunk、在每个分片的shardversion等
-//ChunkManager包含OptionalRoutingTableHistory成员_rt，OptionalRoutingTableHistory包含RoutingTableHistory
 class RoutingTableHistory {
     RoutingTableHistory(const RoutingTableHistory&) = delete;
     RoutingTableHistory& operator=(const RoutingTableHistory&) = delete;
@@ -262,9 +346,17 @@ public:
      */
     void setAllShardsRefreshed();
 
-    // Max version across all chunks ,chunkmap中最大的版本号
+    // Max version across all chunks
     ChunkVersion getVersion() const {
         return _chunkMap.getVersion();
+    }
+
+    MapChunkVector getChunkMap() const {
+        return _chunkMap.getChunkMap();
+    }
+
+    NamespaceString getNss() const {
+        return _nss;
     }
 
     /**
@@ -363,7 +455,6 @@ private:
                         boost::optional<TypeCollectionReshardingFields> reshardingFields,
                         bool allowMigrations,
                         ChunkMap chunkMap);
-
     ChunkVersion _getVersion(const ShardId& shardName, bool throwOnStaleShard) const;
 
     // Namespace to which this routing information corresponds
@@ -392,9 +483,6 @@ private:
 
     bool _allowMigrations;
 
-    //RoutingTableHistory._chunkMap,记录分片表所有得chunks信息
-    //RoutingTableHistory._shardVersions,记录分片表某个分片上面得shardversion信息
-
     // Map from the max for each chunk to an entry describing the chunk. The union of all chunks'
     // ranges must cover the complete space from [MinKey, MaxKey).
     ChunkMap _chunkMap;
@@ -403,7 +491,6 @@ private:
     // shard does not exist, it will not have an entry in the map.
     // Note: this declaration must not be moved before _chunkMap since it is initialized by using
     // the _chunkMap instance.
-    //该表在某个分片上面的shardversion，//根据ChunkMap，记录chunk manager表对应表在每个分片的shardversion，参考ChunkMap::constructShardVersionMap()
     ShardVersionMap _shardVersions;
 };
 
@@ -494,7 +581,6 @@ private:
 
     uint64_t _forcedRefreshSequenceNum{0};
 
-    //chunkmap中最大的版本号
     boost::optional<ChunkVersion> _chunkVersion;
 
     // Locally incremented sequence number that allows to compare two colection versions with
@@ -509,13 +595,6 @@ private:
  * supports sharded collections (i.e., collections which have entries in config.collections and
  * config.chunks).
  */
-//一个表对应一个CollectionShardingRuntime，CollectionShardingRuntime->MetadataManager->CollectionMetadataTracker
-//  ->CollectionMetadata->ChunkManager->RoutingTableHistoryValueHandle(OptionalRoutingTableHistory)->
-//  ->RoutingTableHistory->ChunkMap+ShardVersionMap+片建等
-
- 
-//CatalogCache::CollectionCache::_lookupCollection
-//ChunkManager::_rt  ChunkManager包含OptionalRoutingTableHistory成员_rt，OptionalRoutingTableHistory包含RoutingTableHistory
 struct OptionalRoutingTableHistory {
     // UNSHARDED collection constructor
     OptionalRoutingTableHistory() = default;
@@ -524,23 +603,12 @@ struct OptionalRoutingTableHistory {
     OptionalRoutingTableHistory(RoutingTableHistory&& rt) : optRt(std::move(rt)) {}
 
     // If boost::none, the collection is UNSHARDED, otherwise it is SHARDED
-    //RoutingTableHistoryValueHandle实际上就对应该结构
-    //RoutingTableHistory记录一个分片表的表名、uuid、片建信息、路由chunk、在每个分片的shardversion等
     boost::optional<RoutingTableHistory> optRt;
 };
 
-//CollectionCache继承该类
 using RoutingTableHistoryCache =
     ReadThroughCache<NamespaceString, OptionalRoutingTableHistory, ComparableChunkVersion>;
-//ChunkManager._rt, 实际上对应OptionalRoutingTableHistory，
-//RoutingTableHistory记录一个分片表的表名、uuid、片建信息、路由chunk、在每个分片的shardversion等
 using RoutingTableHistoryValueHandle = RoutingTableHistoryCache::ValueHandle;
-//一个表对应一个CollectionShardingRuntime，CollectionShardingRuntime->MetadataManager->CollectionMetadataTracker
-//  ->CollectionMetadata->ChunkManager->RoutingTableHistoryValueHandle(OptionalRoutingTableHistory)->
-//  ->RoutingTableHistory->ChunkMap+ShardVersionMap+片建等
-
-
-
 
 /**
  * Combines a shard, the shard version, and database version that the shard should be using
@@ -559,18 +627,6 @@ struct ShardEndpoint {
 /**
  * Wrapper around a RoutingTableHistory, which pins it to a particular point in time.
  */
-//一个表对应一个CollectionShardingRuntime，CollectionShardingRuntime->MetadataManager->CollectionMetadataTracker
-//  ->CollectionMetadata->ChunkManager->RoutingTableHistoryValueHandle(OptionalRoutingTableHistory)->
-//  ->RoutingTableHistory->ChunkMap+ShardVersionMap+片建等
-
-
- 
-//MetadataManager::getActiveMetadata    assertIntersectingChunkHasNotMoved
-//CollectionMetadata._cm为该类型，一个表对应一个该结构，一一对应,最终该表的路由信息存入MetadataManager._metadata该链表中,
-//  在CatalogCache::_getCollectionRoutingInfoAt中获取到最新路由信息后构造
-//ChunkManagerTargeter._cm为该类型，在ChunkManagerTargeter::refreshIfNeeded中获取最新路由
-
-//ChunkManager记录一个表对应的库、主分片、成员RoutingTableHistoryValueHandle记录一个分片表的表名、uuid、片建信息、路由chunk、在每个分片的shardversion等
 class ChunkManager {
 public:
     ChunkManager(ShardId dbPrimary,
@@ -583,7 +639,6 @@ public:
           _clusterTime(std::move(clusterTime)) {}
 
     // Methods supported on both sharded and unsharded collections
-
     bool isSharded() const {
         return bool(_rt->optRt);
     }
@@ -757,12 +812,10 @@ public:
     }
 
     bool uuidMatches(UUID uuid) const {
-        //OptionalRoutingTableHistory::optRt, RoutingTableHistory::uuidMatches
         return _rt->optRt->uuidMatches(uuid);
     }
 
     boost::optional<UUID> getUUID() const {
-        ////OptionalRoutingTableHistory::optRt
         return _rt->optRt->getUUID();
     }
 
@@ -779,12 +832,9 @@ public:
     }
 
 private:
-    //主分片
     ShardId _dbPrimary;
     DatabaseVersion _dbVersion;
 
-    //也就是OptionalRoutingTableHistory类型
-    //OptionalRoutingTableHistory.optRt(RoutingTableHistory)记录一个分片表的表名、uuid、片建信息、路由chunk、在每个分片的shardversion等
     RoutingTableHistoryValueHandle _rt;
 
     boost::optional<Timestamp> _clusterTime;

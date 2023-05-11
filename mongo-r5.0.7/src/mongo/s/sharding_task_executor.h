@@ -47,6 +47,7 @@ class ThreadPoolTaskExecutor;
  * Implementation of a TaskExecutor that uses ThreadPoolTaskExecutor to submit tasks and allows to
  * override methods if needed.
  */
+//makeShardingTaskExecutor makeShardingFixedTaskExecutor÷–ππ‘Ï  
 class ShardingTaskExecutor final : public TaskExecutor {
     ShardingTaskExecutor(const ShardingTaskExecutor&) = delete;
     ShardingTaskExecutor& operator=(const ShardingTaskExecutor&) = delete;

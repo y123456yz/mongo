@@ -37,6 +37,8 @@
 
 namespace mongo::plan_ranker {
 namespace log_detail {
+//{"t":{"$date":"2023-05-07T14:31:31.697+08:00"},"s":"D2", "c":"QUERY",    "id":20961,   "ctx":"conn5361","msg":"Score formula","attr":{"formula":"score(1.0002) = baseScore(1) + productivity((0 advanced)/(2 works) = 0) + tieBreakers(0 noFetchBonus + 0.0001 noSortBonus + 0.0001 noIxisectBonus = 0.00020000000000000001)"}}
+//calculateScoreµ÷ÓÃ
 void logScoreFormula(std::function<std::string()> formula,
                      double score,
                      double baseScore,

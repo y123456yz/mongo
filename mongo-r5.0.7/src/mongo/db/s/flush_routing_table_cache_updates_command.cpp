@@ -55,6 +55,7 @@ namespace {
 
 //FlushRoutingTableCacheUpdatesCmdBase 命令中使用，收到_flushRoutingTableCacheUpdates则触发从config server获取最新路由信息
 //，只有主节点执行运行_flushRoutingTableCacheUpdates
+//adminCommand({_flushRoutingTableCacheUpdates: ns}));
 template <typename Derived>
 class FlushRoutingTableCacheUpdatesCmdBase : public TypedCommand<Derived> {
 public:

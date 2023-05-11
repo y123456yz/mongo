@@ -106,7 +106,7 @@ private:
     bool _keysComputed;
     UpdateIndexData _indexedPaths;
 
-    // A cache for query plans. Shared across cloned Collection instances.
+    // A cache for query plans. Shared across cloned Collection instances.  
     std::shared_ptr<PlanCache> _planCache;
 };
 

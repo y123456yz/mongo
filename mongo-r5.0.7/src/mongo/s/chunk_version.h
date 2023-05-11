@@ -174,6 +174,15 @@ public:
         return _timestamp;
     }
 
+    //ChunkVersion& operator=(ChunkVersion&) = default;
+ /*   ChunkVersion& operator=(const ChunkVersion& otherVersion) {
+        _combined = otherVersion._combined;
+        _epoch = otherVersion._epoch;
+        _timestamp = otherVersion._timestamp;
+        
+        return *this;
+    }*/
+
     bool operator==(const ChunkVersion& otherVersion) const {
         return otherVersion.epoch() == epoch() && otherVersion._combined == _combined;
     }

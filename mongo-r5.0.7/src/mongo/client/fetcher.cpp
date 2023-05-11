@@ -247,6 +247,7 @@ bool Fetcher::_isActive_inlock() const {
     return State::kRunning == _state || State::kShuttingDown == _state;
 }
 
+//ÀýÈçShardRemote::runAggregation
 Status Fetcher::schedule() {
     stdx::lock_guard<Latch> lock(_mutex);
     switch (_state) {
@@ -261,6 +262,7 @@ Status Fetcher::schedule() {
             return Status(ErrorCodes::ShutdownInProgress, "fetcher completed");
     }
 
+    //RemoteCommandRetryScheduler::startup
     auto status = _firstRemoteCommandScheduler.startup();
     if (!status.isOK()) {
         _state = State::kComplete;

@@ -444,6 +444,7 @@ Status ShardRemote::runAggregation(
             aggRequest.getUnwrappedReadPref().value_or(BSONObj()),
             ReadPreference::SecondaryPreferred));
 
+
     auto swHost = _targeter->findHost(opCtx, readPreference);
     if (!swHost.isOK()) {
         return swHost.getStatus();
@@ -453,6 +454,12 @@ Status ShardRemote::runAggregation(
     BSONObjBuilder builder;
     readPreference.toContainingBSON(&builder);
     readPrefMetadata = builder.obj();
+
+    LOGV2(6195000,
+          "ShardRemote::runAggregation 11111 {test}",
+          "ShardRemote::runAggregation 11111",
+          "test"_attr = "xxxxxxx");
+
 
     Status status =
         Status(ErrorCodes::InternalError, "Internal error running cursor callback in command");
@@ -502,6 +509,12 @@ Status ShardRemote::runAggregation(
         requestTimeout = Milliseconds(aggRequest.getMaxTimeMS().value_or(0));
     }
 
+    LOGV2(6195000,
+          "ShardRemote::runAggregation 222222 {test}",
+          "ShardRemote::runAggregation 222222",
+          "test"_attr = "xxxxxxx");
+
+
     auto executor = Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
     Fetcher fetcher(executor.get(),
                     host,
@@ -517,10 +530,21 @@ Status ShardRemote::runAggregation(
         return scheduleStatus;
     }
 
+    LOGV2(6195000,
+          "ShardRemote::runAggregation 33333 {test}",
+          "ShardRemote::runAggregation 33333",
+          "test"_attr = "xxxxxxx");
+
+
     Status joinStatus = fetcher.join(opCtx);
     if (!joinStatus.isOK()) {
         return joinStatus;
     }
+    LOGV2(6195000,
+          "ShardRemote::runAggregation 44444 {test}",
+          "ShardRemote::runAggregation 44444",
+          "test"_attr = "xxxxxxx");
+
 
     updateReplSetMonitor(host, status);
 

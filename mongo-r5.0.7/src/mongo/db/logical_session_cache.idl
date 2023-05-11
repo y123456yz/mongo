@@ -73,3 +73,26 @@ server_parameters:
     cpp_vartype: int
     cpp_varname: gTransactionRecordMinimumLifetimeMinutes
     default: 30
+
+  logicalSessionCacheRefreshOperationBatchSize:
+    description: >-
+      The maximum number of documents to update or remove in a single batch during refreshing 
+      logical sessions to config's system.sessions. 
+    set_at: [startup, runtime]
+    cpp_vartype: AtomicWord<int>
+    cpp_varname: logicalSessionCacheRefreshOperationBatchSize
+    validator: 
+      te: 50
+      lte: 10000
+    default: 1000
+
+  logicalSessionCacheRefreshOperationBatchDelayMS:
+    description: >-
+      Time in milliseconds to wait between batches of operations during refreshing logical sessions to 
+      config's system.sessions. The default value of 0 indicates no additional wait.
+    set_at: [startup, runtime]
+    cpp_vartype: AtomicWord<int>
+    cpp_varname: logicalSessionCacheRefreshOperationBatchDelayMS
+    validator:
+      gte: 0
+    default: 0

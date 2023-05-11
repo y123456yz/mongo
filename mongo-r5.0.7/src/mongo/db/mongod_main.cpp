@@ -766,6 +766,7 @@ ExitCode _initAndListen(ServiceContext* serviceContext, int listenPort) {
 
     initializeCommandHooks(serviceContext);
 
+
     // MessageServer::run will return when exit code closes its socket and we don't need the
     // operation context anymore
     startupOpCtx.reset();
@@ -791,6 +792,17 @@ ExitCode _initAndListen(ServiceContext* serviceContext, int listenPort) {
     }
 
     serviceContext->notifyStartupComplete();
+
+	/*mongo::sleepsecs(10);
+	//从config server获取路由信息
+    auto status = preCacheMongosRoutingInfo(startupOpCtx.get());
+    if (!status.isOK()) {
+		LOGV2_ERROR(20571,
+                    "Error preCacheMongosRoutingInfo: {error}",
+                    "Error preCacheMongosRoutingInfo",
+                    "error"_attr = status);
+        return EXIT_SHARDING_ERROR;
+    }*/
 
 #ifndef _WIN32
     mongo::signalForkSuccess();

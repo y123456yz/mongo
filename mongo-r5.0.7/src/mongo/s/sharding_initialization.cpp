@@ -103,6 +103,7 @@ std::shared_ptr<executor::TaskExecutor> makeShardingFixedTaskExecutor(
     return std::make_shared<executor::ShardingTaskExecutor>(std::move(executor));
 }
 
+//initializeGlobalShardingState
 std::unique_ptr<TaskExecutorPool> makeShardingTaskExecutorPool(
     std::unique_ptr<NetworkInterface> fixedNet,
     rpc::ShardingEgressMetadataHookBuilder metadataHookBuilder,
@@ -114,6 +115,7 @@ std::unique_ptr<TaskExecutorPool> makeShardingTaskExecutorPool(
 
     for (size_t i = 0; i < poolSize; ++i) {
         auto exec = makeShardingTaskExecutor(
+            //生成NetworkInterfaceTL类
             executor::makeNetworkInterface("TaskExecutorPool-" + std::to_string(i),
                                            std::make_unique<ShardingNetworkConnectionHook>(),
                                            metadataHookBuilder(),
@@ -152,6 +154,7 @@ void preWarmConnections(OperationContext* opCtx, std::vector<HostAndPort> allHos
 
 }  // namespace
 
+//makeShardingTaskExecutorPool   
 std::unique_ptr<executor::TaskExecutor> makeShardingTaskExecutor(
     std::unique_ptr<NetworkInterface> net) {
     auto netPtr = net.get();
@@ -255,6 +258,12 @@ Status waitForShardRegistryReload(OperationContext* opCtx) {
 
 //mongos重启获取路由信息
 Status preCacheMongosRoutingInfo(OperationContext* opCtx) {
+	LOGV2(
+		238341,
+		"preCacheMongosRoutingInfo",
+		"preCacheMongosRoutingInfo",
+		"status"_attr = "11111111");
+
     if (!gLoadRoutingTableOnStartup) {
         return Status::OK();
     }
@@ -267,6 +276,11 @@ Status preCacheMongosRoutingInfo(OperationContext* opCtx) {
     auto catalogClient = grid->catalogClient();
     auto catalogCache = grid->catalogCache();
     auto allDbs = catalogClient->getAllDBs(opCtx, repl::ReadConcernLevel::kMajorityReadConcern);
+	LOGV2(
+		238341,
+		"preCacheMongosRoutingInfo",
+		"preCacheMongosRoutingInfo",
+		"status"_attr = "2222222222");
 
     for (auto& db : allDbs) {
         for (auto& coll : catalogClient->getAllShardedCollectionsForDb(
@@ -277,6 +291,11 @@ Status preCacheMongosRoutingInfo(OperationContext* opCtx) {
             }
         }
     }
+		LOGV2(
+		238341,
+		"preCacheMongosRoutingInfo",
+		"preCacheMongosRoutingInfo",
+		"status"_attr = "33333");
     return Status::OK();
 }
 

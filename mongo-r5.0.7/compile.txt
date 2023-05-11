@@ -1,4 +1,16 @@
+nohup python buildscripts/resmoke.py --suites=sharding,sharding_auth,aggregation,aggregation_auth,aggregation_facet_unwind_passthrough,aggregation_sharded_collections_passthrough,audit,backup,bulk_gle_passthrough,concurrency,concurrency_replication,concurrency_sharded,core,core_auth,core_compression,core_minimum_batch_size,core_op_query,dbtest,decimal,disk,dur_jscore_passthrough,durability,failpoints,failpoints_auth,gle_auth,gle_auth_basics_passthrough,httpinterface,knobs,master_slave,master_slave_auth,master_slave_jscore_passthrough,mmap,mongos_test,auth,auth_audit,external_auth --continueOnFailure --log=file --dbpathPrefix=/disk1/shenmengye/percona-server-mongodb/nonblocking --jobs=10 --basePort=20003 >log&
+
+5.0集成测试python版本3.7.14没问题，其他版本有问题
+scons 需要 scons-4.0.0版本，否则scons unittests会执行不起来，参考https://blog.csdn.net/p1279030826/article/details/111464816
+使用python3.7.14同样目录中得scons，保持版本一致
+python3 buildscripts/scons.py install-all-meta 编译出所有二进制，包括unittest mongod mongos wt test等
+
+python buildscripts/resmoke.py run --suites=unittests  单元测试
+/usr/bin/python3 buildscripts/scons.py --disable-warnings-as-errors VERBOSE=on install-mongos install-mongod -j 12
+python buildscripts/resmoke.py --suites=core,replica_sets --dbpathPrefix=$(pwd)/test
+
 python3 buildscripts/scons.py install-mongod -j 2 MONGO_VERSION=5.0.7
 python3 buildscripts/scons.py install-all-meta  编译所有，包括单元测试
 
+python3 buildscripts/scons.py install-mongod  install-mongos  MONGO_VERSION=5.0.7 -j 2 VERBOSE=on
 python3 buildscripts/scons.py  build/opt/mongo/util/util_test  编译某个指定的test

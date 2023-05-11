@@ -77,7 +77,11 @@ void logNotCachingNoData(std::string&& solution);
  *    * Always cached.
  *    * Never cached.
  *    * Cached, except in certain special cases.
- */
+ */ 
+ 
+//配合阅读PrepareExecutionHelper::prepare() ，prepare中判断是否使用缓存的planCache，还是重新生成新的planCache
+//MultiPlanStage::pickBestPlan->MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
+
 template <typename PlanStageType, typename ResultType, typename Data>
 void updatePlanCache(
     OperationContext* opCtx,
@@ -183,6 +187,7 @@ void updatePlanCache(
         if (validSolutions) {
             uassertStatusOK(CollectionQueryInfo::get(collection)
                                 .getPlanCache()
+                                //PlanCache::set
                                 ->set(query,
                                       solutions,
                                       std::move(ranking),

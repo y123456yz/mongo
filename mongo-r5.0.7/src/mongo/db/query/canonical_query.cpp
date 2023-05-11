@@ -554,6 +554,7 @@ std::string CanonicalQuery::toStringShort() const {
     return ss;
 }
 
+//canonical_query_encoder::encodeKey
 CanonicalQuery::QueryShapeString CanonicalQuery::encodeKey() const {
     return canonical_query_encoder::encode(*this);
 }

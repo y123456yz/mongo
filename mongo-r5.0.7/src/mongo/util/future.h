@@ -299,7 +299,7 @@ SemiFuture(StatusWith<T>)->SemiFuture<T>;
  * Future<T> is a SemiFuture<T> (which is logically a possibly deferred StatusOrStatusWith<T>),
  * extended with the ability to chain additional continuations that will be invoked when the result
  * is ready.
- *
+ *  https://zhuanlan.zhihu.com/p/527836978   C++多线程并发编程 7. Future, Promise and async()
  * All comments on SemiFuture<T> apply to Future<T> as well.
  */
 template <typename T>

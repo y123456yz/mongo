@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -36,6 +37,7 @@
 #include "mongo/client/remote_command_retry_scheduler.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/destructor_guard.h"
+#include "mongo/logv2/log.h"
 
 namespace mongo {
 
@@ -83,6 +85,7 @@ bool RemoteCommandRetryScheduler::_isActive_inlock() const {
     return State::kRunning == _state || State::kShuttingDown == _state;
 }
 
+//Fetcher::schedule()
 Status RemoteCommandRetryScheduler::startup() {
     stdx::lock_guard<Latch> lock(_mutex);
 
@@ -134,6 +137,10 @@ void RemoteCommandRetryScheduler::shutdown() {
 
 void RemoteCommandRetryScheduler::join() {
     stdx::unique_lock<Latch> lock(_mutex);
+    LOGV2(6195000,
+          "RemoteCommandRetryScheduler::join 11111111 {test}",
+          "RemoteCommandRetryScheduler::join 11111111",
+          "test"_attr = "xxxxxxx");
     _condition.wait(lock, [this]() { return !_isActive_inlock(); });
 }
 
@@ -154,8 +161,18 @@ std::string RemoteCommandRetryScheduler::toString() const {
 
 Status RemoteCommandRetryScheduler::_schedule_inlock() {
     ++_currentAttempt;
+
+    LOGV2(6195000,
+          "RemoteCommandRetryScheduler::_schedule_inlock 1111111111 {test}",
+          "RemoteCommandRetryScheduler::_schedule_inlock 1111111111",
+          "test"_attr = "xxxxxxx");
     auto scheduleResult = _executor->scheduleRemoteCommand(
         _request, [this](const auto& x) { return this->_remoteCommandCallback(x); });
+
+    LOGV2(6195000,
+      "RemoteCommandRetryScheduler::_schedule_inlock 2222222222222222 {test}",
+      "RemoteCommandRetryScheduler::_schedule_inlock 2222222222222222",
+      "test"_attr = "xxxxxxx");
 
     if (!scheduleResult.isOK()) {
         return scheduleResult.getStatus();
@@ -169,6 +186,11 @@ void RemoteCommandRetryScheduler::_remoteCommandCallback(
     const executor::TaskExecutor::RemoteCommandCallbackArgs& rcba) {
     const auto& status = rcba.response.status;
 
+    LOGV2(6195000,
+          "RemoteCommandRetryScheduler::_remoteCommandCallback 111111111111 {test}",
+          "RemoteCommandRetryScheduler::_remoteCommandCallback 111111111111",
+          "test"_attr = "xxxxxxx");
+
     // Use a lambda to avoid unnecessary lock acquisition when checking conditions for termination.
     auto getCurrentAttempt = [this]() {
         stdx::lock_guard<Latch> lock(_mutex);
@@ -178,6 +200,10 @@ void RemoteCommandRetryScheduler::_remoteCommandCallback(
     if (status.isOK() || status == ErrorCodes::CallbackCanceled ||
         !_retryPolicy->shouldRetryOnError(status.code()) ||
         getCurrentAttempt() == _retryPolicy->getMaximumAttempts()) {
+            LOGV2(6195000,
+          "RemoteCommandRetryScheduler::_remoteCommandCallback 22222222222 {test}",
+          "RemoteCommandRetryScheduler::_remoteCommandCallback 22222222222",
+          "test"_attr = "xxxxxxx");
         _onComplete(rcba);
         return;
     }
@@ -190,10 +216,19 @@ void RemoteCommandRetryScheduler::_remoteCommandCallback(
             return Status(ErrorCodes::CallbackCanceled,
                           "scheduler was shut down before retrying command");
         }
+
+                    LOGV2(6195000,
+          "RemoteCommandRetryScheduler::_remoteCommandCallback 333333333333333 {test}",
+          "RemoteCommandRetryScheduler::_remoteCommandCallback 333333333333333",
+          "test"_attr = "xxxxxxx");
         return _schedule_inlock();
     }();
 
     if (!scheduleStatus.isOK()) {
+                            LOGV2(6195000,
+          "RemoteCommandRetryScheduler::_remoteCommandCallback 4444444444444 {test}",
+          "RemoteCommandRetryScheduler::_remoteCommandCallback 4444444444444",
+          "test"_attr = "xxxxxxx");
         _onComplete({rcba.executor, rcba.myHandle, rcba.request, scheduleStatus});
         return;
     }
@@ -201,6 +236,11 @@ void RemoteCommandRetryScheduler::_remoteCommandCallback(
 
 void RemoteCommandRetryScheduler::_onComplete(
     const executor::TaskExecutor::RemoteCommandCallbackArgs& rcba) {
+
+    LOGV2(6195000,
+          "RemoteCommandRetryScheduler::_onComplete 2222222222222 {test}",
+          "RemoteCommandRetryScheduler::_onComplete 2222222222222",
+          "test"_attr = "xxxxxxx");
 
     invariant(_callback);
     _callback(rcba);
@@ -210,10 +250,19 @@ void RemoteCommandRetryScheduler::_onComplete(
     // RemoteCommandRetryScheduler, we release this function object outside the lock.
     _callback = {};
 
+    LOGV2(6195000,
+          "RemoteCommandRetryScheduler::_onComplete 3333333333 {test}",
+          "RemoteCommandRetryScheduler::_onComplete 3333333333",
+          "test"_attr = "xxxxxxx");
+
     stdx::lock_guard<Latch> lock(_mutex);
     invariant(_isActive_inlock());
     _state = State::kComplete;
     _condition.notify_all();
+        LOGV2(6195000,
+          "RemoteCommandRetryScheduler::_onComplete 444444444444444 {test}",
+          "RemoteCommandRetryScheduler::_onComplete 4444444444444444",
+          "test"_attr = "xxxxxxx");
 }
 
 bool isMongosRetriableError(const ErrorCodes::Error& code) {

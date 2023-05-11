@@ -468,6 +468,10 @@ static int buildResourceSearchList(const ResourcePattern& target,
             if (target.ns().db() != "local" && target.ns().db() != "config") {
                 resourceSearchList[size++] = ResourcePattern::forAnyNormalResource();
             }
+
+            LOGV2_WARNING(5626700,
+                              "buildResourceSearchList, yang test 1111111111111111",
+                              "user"_attr = "11111111111111111");
             resourceSearchList[size++] = ResourcePattern::forDatabaseName(target.ns().db());
         } else if (target.ns().coll().startsWith(SYSTEM_BUCKETS_PREFIX) &&
                    target.ns().coll().size() > SYSTEM_BUCKETS_PREFIX.size()) {

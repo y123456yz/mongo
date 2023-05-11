@@ -39,6 +39,7 @@ class Status;
 /**
  * Interface for a thread pool.
  */
+//NetworkInterfaceThreadPool   ThreadPool继承该ThreadPoolInterface类，代表一个线程池
 class ThreadPoolInterface : public OutOfLineExecutor {
     ThreadPoolInterface(const ThreadPoolInterface&) = delete;
     ThreadPoolInterface& operator=(const ThreadPoolInterface&) = delete;

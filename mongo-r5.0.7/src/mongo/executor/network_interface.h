@@ -51,7 +51,9 @@ extern FailPoint networkInterfaceShouldNotKillPendingRequests;
 
 /**
  * Interface to networking for use by TaskExecutor implementations.
- */ //Grid._network全局变量
+ */ 
+//Grid._network全局变量
+//NetworkInterfaceTL继承该类 
 class NetworkInterface {
     NetworkInterface(const NetworkInterface&) = delete;
     NetworkInterface& operator=(const NetworkInterface&) = delete;

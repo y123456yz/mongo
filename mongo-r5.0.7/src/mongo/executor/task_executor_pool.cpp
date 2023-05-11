@@ -39,6 +39,7 @@
 namespace mongo {
 namespace executor {
 
+//taskExecutorPoolSizeÅäÖÃ   makeShardingTaskExecutorPoolÖÐÊ¹ÓÃ
 size_t TaskExecutorPool::getSuggestedPoolSize() {
     auto poolSize = taskExecutorPoolSize.load();
     if (poolSize > 0) {
@@ -71,6 +72,7 @@ void TaskExecutorPool::shutdownAndJoin() {
     }
 }
 
+//makeShardingTaskExecutorPool
 void TaskExecutorPool::addExecutors(std::vector<std::shared_ptr<TaskExecutor>> executors,
                                     std::shared_ptr<TaskExecutor> fixedExecutor) {
     invariant(_executors.empty());

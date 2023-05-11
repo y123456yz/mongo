@@ -47,7 +47,8 @@ namespace executor {
  *
  * Initialization and shutdown methods are not thread-safe, but getArbitraryExecutor() may be called
  * concurrently by multiple threads.
- */ //Grid._executorPool全局变量
+ */ 
+//Grid._executorPool全局变量, makeShardingTaskExecutorPool中构造
 class TaskExecutorPool final {
 public:
     /**
@@ -120,8 +121,12 @@ public:
 private:
     AtomicWord<unsigned> _counter;
 
+    //taskExecutorPoolSize配置设置，参考makeShardingTaskExecutorPool
+    //成员赋值makeShardingTaskExecutorPool->makeShardingTaskExecutor
     std::vector<std::shared_ptr<TaskExecutor>> _executors;
 
+    // Add executor used to perform non-performance critical work.  赋值参考makeShardingTaskExecutorPool
+    //赋值makeShardingTaskExecutorPool->makeShardingFixedTaskExecutor
     std::shared_ptr<TaskExecutor> _fixedExecutor;
 };
 

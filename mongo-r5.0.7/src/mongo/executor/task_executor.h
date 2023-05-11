@@ -72,6 +72,8 @@ struct ConnectionPoolStats;
  * If an event is unsignaled when shutdown is called, the executor will ensure that any threads
  * blocked in waitForEvent() eventually return.
  */
+//TaskExecutorPool中包含该成员变量 
+//ScopedTaskExecutor  ShardingTaskExecutor  ThreadPoolTaskExecutor继承该类
 class TaskExecutor : public OutOfLineExecutor, public std::enable_shared_from_this<TaskExecutor> {
     TaskExecutor(const TaskExecutor&) = delete;
     TaskExecutor& operator=(const TaskExecutor&) = delete;

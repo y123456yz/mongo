@@ -53,6 +53,7 @@ OperationShardingState::~OperationShardingState() {
     invariant(!_shardingOperationFailedStatus);
 }
 
+//参考ShardServerOpObserver::onCreateCollection使用
 OperationShardingState& OperationShardingState::get(OperationContext* opCtx) {
     return shardingMetadataDecoration(opCtx);
 }
@@ -201,6 +202,7 @@ boost::optional<Status> OperationShardingState::resetShardingOperationFailedStat
 using ScopedAllowImplicitCollectionCreate_UNSAFE =
     OperationShardingState::ScopedAllowImplicitCollectionCreate_UNSAFE;
 
+//允许隐式表创建
 ScopedAllowImplicitCollectionCreate_UNSAFE::ScopedAllowImplicitCollectionCreate_UNSAFE(
     OperationContext* opCtx)
     : _opCtx(opCtx) {

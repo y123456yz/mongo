@@ -103,6 +103,7 @@ void NetworkInterfaceThreadPool::join() {
         lk, [&] { return _tasks.empty() && (_consumeState == ConsumeState::kNeutral); });
 }
 
+//task加入队列
 void NetworkInterfaceThreadPool::schedule(Task task) {
     stdx::unique_lock<Latch> lk(_mutex);
     if (_inShutdown) {
@@ -137,6 +138,8 @@ void NetworkInterfaceThreadPool::_consumeTasks(stdx::unique_lock<Latch> lk) {
 
     _consumeState = ConsumeState::kScheduled;
     lk.unlock();
+
+    //NetworkInterfaceTL::schedule
     auto ret = _net->schedule([this](Status status) {
         stdx::unique_lock<Latch> lk(_mutex);
 

@@ -606,6 +606,15 @@ StatusWith<ShardEndpoint> ChunkManagerTargeter::_targetShardKey(const BSONObj& s
                                                                 const BSONObj& collation) const {
     try {
         auto chunk = _cm.findIntersectingChunk(shardKey, collation);
+
+		auto shardKeyString = ShardKeyPattern::toKeyString(shardKey);
+		LOGV2(227511,
+			"ChunkManagerTargeter::_targetShardKey: {shardKeyString}, {chunk}, {getVersion}",
+			"ChunkManagerTargeter::_targetShardKey",
+			//ChunkManager::toString->RoutingTableHistory::toString
+			"shardKeyString"_attr = shardKeyString,
+			"chunk"_attr = chunk.toString(),
+			"getVersion"_attr = (_cm.getVersion(chunk.getShardId())).toString());
         return ShardEndpoint(chunk.getShardId(), _cm.getVersion(chunk.getShardId()), boost::none);
     } catch (const DBException& ex) {
         return ex.toStatus();

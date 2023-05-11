@@ -556,8 +556,13 @@ public:
           _plannerOptions{plannerOptions} {
         invariant(_cq);
     }
+    //配合阅读PrepareExecutionHelper::prepare() ，prepare中判断是否使用缓存的planCache，还是重新生成新的planCache
+    //MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
+    
+    //PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)->MultiPlanStage::pickBestPlan->MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
 
-    StatusWith<std::unique_ptr<ResultType>> prepare() {
+   //PrepareExecutionHelper::prepare()(本函数) 
+    StatusWith<std::unique_ptr<ResultType>> prepare() {//PrepareExecutionHelper::prepare() 
         if (!_collection) {
             LOGV2_DEBUG(20921,
                         2,
@@ -641,6 +646,8 @@ public:
                                     "query"_attr = redact(_cq->toStringShort()));
                     }
 
+                    //生成CachedPlanStage
+                    //PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)中使用
                     return buildCachedPlan(
                         std::move(querySolution), plannerParams, cs->decisionWorks);
                 }
@@ -700,6 +707,8 @@ public:
             return std::move(result);
         }
 
+        //生成MultiPlanStage
+        //PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)中使用
         return buildMultiPlan(std::move(solutions), plannerParams);
     }
 
@@ -850,6 +859,7 @@ protected:
         return result;
     }
 
+    //生成CachedPlanStage
     std::unique_ptr<ClassicPrepareExecutionResult> buildCachedPlan(
         std::unique_ptr<QuerySolution> solution,
         const QueryPlannerParams& plannerParams,
@@ -881,6 +891,9 @@ protected:
         return result;
     }
 
+    //PrepareExecutionHelper::prepare()-> buildMultiPlan->MultiPlanStage::addPlan
+
+    //生成MultiPlanStage
     std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan(
         std::vector<std::unique_ptr<QuerySolution>> solutions,
         const QueryPlannerParams& plannerParams) final {
@@ -1007,6 +1020,7 @@ protected:
         return result;
     }
 
+    //PrepareExecutionHelper::prepare()-> buildMultiPlan 
     std::unique_ptr<SlotBasedPrepareExecutionResult> buildMultiPlan(
         std::vector<std::unique_ptr<QuerySolution>> solutions,
         const QueryPlannerParams& plannerParams) final {

@@ -206,6 +206,9 @@ void CollectionQueryInfo::clearQueryCacheForSetMultikey(const CollectionPtr& col
     _planCache->clear();
 }
 
+//获取某个表的planCache接口CollectionQueryInfo::get(collection()).getPlanCache();
+
+//planCache set的接口在updatePlanCache
 PlanCache* CollectionQueryInfo::getPlanCache() const {
     return _planCache.get();
 }

@@ -81,6 +81,17 @@ public:
     static std::vector<IndexEntry> findRelevantIndices(const RelevantFieldIndexMap& fields,
                                                        const std::vector<IndexEntry>& allIndices);
 
+   /**
+     * remove repeat contain index from the relevant candidate indexes, this can avoid some useless calculations.
+     * for example:
+     *   {a:1, b:1} contain {a:1}, so we can remove index {a:1} from the candidates
+     *   {a:"hashed", b:1} contain {a:"hashed"}, so we can remove index {a:"hahsed"} from the candidates
+     *
+     * {a:1, b:1} is better than {a:1},because both cases are satisfied for db.collection.find({a:xx}) 
+     *    and db.collection.find({a:xx,b:xx})
+     */
+    static void removeRepeatContainIndexes(std::vector<IndexEntry>& indexes);
+
     /**
      * Determine how useful all of our relevant 'indices' are to all predicates in the subtree
      * rooted at 'node'.  Affixes a RelevantTag to all predicate nodes which can use an index.

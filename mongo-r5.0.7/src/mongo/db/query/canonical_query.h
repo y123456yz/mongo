@@ -229,6 +229,8 @@ public:
         return _explain;
     }
 
+    ////"If true, the system will use the SBE execution engine for eligible queries,otherwise all queries will execute using the classic execution engine."
+
     bool getEnableSlotBasedExecutionEngine() const {
         return _enableSlotBasedExecutionEngine;
     }
@@ -279,6 +281,7 @@ private:
     bool _explain = false;
 
     // Determines whether the SBE engine is enabled.
+    //"If true, the system will use the SBE execution engine for eligible queries,otherwise all queries will execute using the classic execution engine."
     bool _enableSlotBasedExecutionEngine = false;
 };
 

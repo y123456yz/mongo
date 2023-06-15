@@ -36,7 +36,7 @@
 #include "mongo/db/query/query_knobs_gen.h"
 
 namespace mongo {
-
+//填充赋值见fillOutPlannerParams
 struct QueryPlannerParams {
     QueryPlannerParams()
         : options(DEFAULT),
@@ -129,6 +129,7 @@ struct QueryPlannerParams {
     size_t options;
 
     // What indices are available for planning?
+    //赋值参考fillOutPlannerParams
     std::vector<IndexEntry> indices;
 
     // What's our shard key?  If INCLUDE_SHARD_FILTER is set we will create a shard filtering

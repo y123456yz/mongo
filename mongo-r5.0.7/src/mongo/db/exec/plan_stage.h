@@ -141,15 +141,15 @@ public:
     enum StageState {
         // work(...) has returned a new result in its out parameter.  The caller must free it
         // from the working set when done with it.
-        ADVANCED,
+        ADVANCED, //获取到满足条件的数据
 
         // work(...) won't do anything more.  isEOF() will also be true.  There is nothing
         // output in the out parameter.
-        IS_EOF,
+        IS_EOF, //索引满足条件的数据结束
 
         // work(...) needs more time to product a result.  Call work(...) again.  There is
         // nothing output in the out parameter.
-        NEED_TIME,
+        NEED_TIME, //例如一个查询$lt:5，则最开始就需要一个work来定位5的位置
 
         // The storage engine says we need to yield, possibly to fetch a record from disk, or
         // due to an aborted transaction in the storage layer.
@@ -214,7 +214,7 @@ public:
         
         if (StageState::ADVANCED == workResult) {
             ++_commonStats.advanced;
-        } else if (StageState::NEED_TIME == workResult) {
+        } else if (StageState::NEED_TIME == workResult) { //搜索PlanStage::NEED_TIME看哪里返回的这个
             ++_commonStats.needTime;
         } else if (StageState::NEED_YIELD == workResult) {
             ++_commonStats.needYield;

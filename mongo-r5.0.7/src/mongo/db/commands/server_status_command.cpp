@@ -93,6 +93,8 @@ public:
         result.append("pid", ProcessId::getCurrent().asLongLong());
         result.append("uptime", (double)(time(nullptr) - serverGlobalParams.started));
         auto uptime = clock->now() - _started;
+
+        const Date_t _started(Date_t::now()
         result.append("uptimeMillis", durationCount<Milliseconds>(uptime));
         result.append("uptimeEstimate", durationCount<Seconds>(uptime));
         result.appendDate("localTime", jsTime());

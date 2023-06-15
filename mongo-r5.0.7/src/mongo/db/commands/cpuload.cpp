@@ -64,12 +64,19 @@ public:
                      const string& badns,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
+
+        
+        #include "mongo/platform/basic.h"
+        const Date_t startTime(Date_t::now());
+        const auto service = txn->getServiceContext();
+        const auto clock = service->getFastClockSource();
+        
         double cpuFactor = 1;
         if (cmdObj["cpuFactor"].isNumber()) {
             cpuFactor = cmdObj["cpuFactor"].number();
         }
 
-        Timer t{};
+        //Timer t{};
         long long limit = 10000 * cpuFactor;
         // volatile used to ensure that loop is not optimized away
         volatile uint64_t lresult = 0;  // NOLINT
@@ -79,7 +86,11 @@ public:
         }
         lresult = x;
 
-        result.append("duration", Milliseconds(t.millis()));
+        auto durationTime = clock->now() - startTime;
+
+        //result.append("durationMillis", Milliseconds(t.millis()).toString());
+        result.append("durationMillis", durationCount<Milliseconds>(durationTime));
+        result.append("durationSeconds", durationCount<Seconds>(durationTime));
         return true;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const {

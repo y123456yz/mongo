@@ -53,7 +53,8 @@ class PlanYieldPolicy;
  * occur with the set of indices in 'params'. As a future improvement, we could instead refresh the
  * list of indices in 'params' prior to replanning, and thus avoid inheriting from
  * RequiresAllIndicesStage.
- */
+ */ 
+//buildCachedPlan中生成  PlanExecutorImpl::_pickBestPlan()中使用CachedPlanStage
 class CachedPlanStage final : public RequiresAllIndicesStage {
 public:
     CachedPlanStage(ExpressionContext* expCtx,

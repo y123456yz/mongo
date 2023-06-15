@@ -72,6 +72,7 @@ void markShouldCollectTimingInfoOnSubtree(PlanStage* root) {
 }
 }  // namespace
 
+//buildMultiPlan中构造生成
 MultiPlanStage::MultiPlanStage(ExpressionContext* expCtx,
                                const CollectionPtr& collection,
                                CanonicalQuery* cq,
@@ -159,12 +160,21 @@ void MultiPlanStage::tryYield(PlanYieldPolicy* yieldPolicy) {
     }
 }
 
-//配合阅读PrepareExecutionHelper::prepare() ，prepare中判断是否使用缓存的planCache，还是重新生成新的planCache
+//PlanCache::getNewEntryState中决定plancache是否为active的
+
+//MultiPlanStage::pickBestPlan中确定是否需要淘汰老的plancache同时生成新的plancache
+//CachedPlanStage::pickBestPlan->CachedPlanStage::replan->MultiPlanStage::pickBestPlan重新选择最优
+//  索引生成最新plancache，同时淘汰老的plancache
+
+//配合阅读PrepareExecutionHelper::prepare()->getCacheEntryIfActive ，prepare中判断是否使用缓存的planCache，还是直接评分优化生成执行计划
 //MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
 
 //PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)->MultiPlanStage::pickBestPlan->MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
 
 //PlanExecutorImpl::_pickBestPlan()中调用, MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
+
+
+//CachedPlanStage::replan  PlanExecutorImpl::_pickBestPlan()调用 
 Status MultiPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
     // Adds the amount of time taken by pickBestPlan() to executionTimeMillis. There's lots of
     // execution work that happens here, so this is needed for the time accounting to
@@ -185,6 +195,13 @@ Status MultiPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
                 break;
             }
         }
+
+        LOGV2_DEBUG(20112,
+            4,
+            "MultiPlanStage::pickBestPlan xxxxxxxxxxxx",
+            "numWorks"_attr = numWorks,
+            "numResults"_attr = numResults,
+            "ix"_attr = ix);
     } catch (DBException& e) {
         return e.toStatus().withContext("error while multiplanner was selecting best plan");
     }
@@ -226,6 +243,14 @@ Status MultiPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
             }
         }
     }
+
+    /*
+    std::unique_ptr<PlanStageStats> bestCandidateStatTrees;
+    bestCandidateStatTrees = candidates[_bestPlanIdx].root->getStats();
+    if (bestCandidateStatTrees->common.advanced == 0 
+        && bestCandidateStatTrees->common.isEOF == true) {
+        return Status::OK();
+    }*/
 
     plan_cache_util::updatePlanCache(
         expCtx()->opCtx, collection(), _cachingMode, *_query, std::move(ranking), _candidates);
@@ -277,11 +302,14 @@ bool MultiPlanStage::workAllPlans(size_t numResults, PlanYieldPolicy* yieldPolic
 
             // Once a plan returns enough results, stop working.
             if (candidate.results.size() >= numResults) {
+                //注意这里是多个候选索引中的任何一个找到了101条，就停止work，后续不会在进入该MultiPlanStage::workAllPlans
                 doneWorking = true;
             }
         } else if (PlanStage::IS_EOF == state) {
             // First plan to hit EOF wins automatically.  Stop evaluating other plans.
             // Assumes that the ranking will pick this plan.
+
+            //注意这里是多个候选索引中的任何一个EOF了，就停止work，就停止work，后续不会在进入该MultiPlanStage::workAllPlans
             doneWorking = true;
         } else if (PlanStage::NEED_YIELD == state) {
             invariant(id == WorkingSet::INVALID_ID);

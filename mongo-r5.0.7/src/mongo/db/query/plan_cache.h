@@ -298,7 +298,7 @@ public:
 /**
  * Used by the cache to track entries and their performance over time.
  * Also used by the plan cache commands to display plan cache state.
- */
+ */ //PlanCacheEntry::create中构造生成
 class PlanCacheEntry {
 public:
     /**
@@ -392,7 +392,8 @@ public:
     const uint32_t planCacheKey;
 
     // Whether or not the cache entry is active. Inactive cache entries should not be used for
-    // planning.
+    // planning.  PlanCache::getCacheEntryIfActive判断plancache是否是active的
+    //赋值来源见PlanCache::set->PlanCacheEntry::create
     bool isActive = false;
 
     // The number of "works" required for a plan to run on this shape before it becomes
@@ -400,6 +401,9 @@ public:
     // trigger a replan. Running a query of the same shape while this cache entry is inactive may
     // cause this value to be increased.
     size_t works = 0;
+
+    //the query count that use this plan to run the sql
+    uint64_t queryCounters = 0;
 
     // Optional debug info containing detailed statistics. Includes a description of the query which
     // resulted in this plan cache's creation as well as runtime stats from the multi-planner trial
@@ -542,6 +546,7 @@ public:
      * inactive, log a message and return a nullptr. If no cache entry exists, return a nullptr.
      */
     std::unique_ptr<CachedSolution> getCacheEntryIfActive(const PlanCacheKey& key) const;
+    void increaseCacheQueryCounters(const CanonicalQuery& query);
 
     /**
      * Remove the entry corresponding to 'ck' from the cache.  Returns Status::OK() if the plan
@@ -612,7 +617,7 @@ private:
                                    PlanCacheEntry* oldEntry,
                                    size_t newWorks,
                                    double growthCoefficient);
-
+    //getMatchingStats中遍历输出
     LRUKeyValue<PlanCacheKey, PlanCacheEntry, PlanCacheKeyHasher> _cache;
 
     // Protects _cache.
@@ -626,3 +631,4 @@ private:
     PlanCacheIndexabilityState _indexabilityState;
 };
 }  // namespace mongo
+

@@ -50,6 +50,7 @@ std::unique_ptr<PlanStage> buildClassicExecutableTree(OperationContext* opCtx,
     invariant(solution.root());
     invariant(ws);
     auto builder = std::make_unique<ClassicStageBuilder>(opCtx, collection, cq, solution, ws);
+    //ClassicStageBuilder::build
     return builder->build(solution.root());
 }
 

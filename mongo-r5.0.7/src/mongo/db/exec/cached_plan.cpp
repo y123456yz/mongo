@@ -52,13 +52,14 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/str.h"
 #include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
+#include "mongo/db/exec/trial_period_utils.h"
 
 namespace mongo {
 
 // static
 const char* CachedPlanStage::kStageType = "CACHED_PLAN";
 
-//buildCachedPlan中生成
+//buildCachedPlan中生成  PlanExecutorImpl::_pickBestPlan()中使用
 CachedPlanStage::CachedPlanStage(ExpressionContext* expCtx,
                                  const CollectionPtr& collection,
                                  WorkingSet* ws,
@@ -74,6 +75,18 @@ CachedPlanStage::CachedPlanStage(ExpressionContext* expCtx,
     _children.emplace_back(std::move(root));
 }
 
+//PlanCache::getNewEntryState中决定plancache是否为active的
+
+//MultiPlanStage::pickBestPlan中确定是否需要淘汰老的plancache同时生成新的plancache
+//CachedPlanStage::pickBestPlan->CachedPlanStage::replan->MultiPlanStage::pickBestPlan重新选择最优
+//  索引生成最新plancache，同时淘汰老的plancache
+
+//配合阅读PrepareExecutionHelper::prepare()->getCacheEntryIfActive ，prepare中判断是否使用缓存的planCache，还是直接评分优化生成执行计划
+//MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
+
+//PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)->MultiPlanStage::pickBestPlan->MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
+
+//PlanExecutorImpl::_pickBestPlan()中使用
 Status CachedPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
     // Adds the amount of time taken by pickBestPlan() to executionTimeMillis. There's lots of
     // execution work that happens here, so this is needed for the time accounting to
@@ -90,8 +103,19 @@ Status CachedPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
 
     // If we work this many times during the trial period, then we will replan the
     // query from scratch.
+    
     size_t maxWorksBeforeReplan =
+        //默认10，"How many times more works must we perform in order to justify plan cache eviction and replanning?"
         static_cast<size_t>(internalQueryCacheEvictionRatio * _decisionWorks);
+
+    // the replan works can not exceed the number of works that is set to be the fraction of the 
+    // collection size.
+    // in extreme cases, if there are no restrictions, Probably more than the total collection size,
+    // this replan may lose effectiveness. it may lead that the query use wrong index.
+    size_t numUpperLimitWorks = trial_period::getTrialPeriodMaxWorks(opCtx(), collection());
+    if (maxWorksBeforeReplan > numUpperLimitWorks) {
+        maxWorksBeforeReplan = numUpperLimitWorks;
+    }
 
     // The trial period ends without replanning if the cached plan produces this many results.
     size_t numResults = trial_period::getTrialPeriodNumToReturn(*_canonicalQuery);
@@ -133,11 +157,13 @@ Status CachedPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
             member->makeObjOwnedIfNeeded();
             _results.push(id);
 
+            //如果找到了满足条件的101条数据，则不需要进行后面的replan，直接用缓存的plancache执行
             if (_results.size() >= numResults) {
                 // Once a plan returns enough results, stop working. There is no need to replan.
                 return Status::OK();
             }
         } else if (PlanStage::IS_EOF == state) {
+            //还没找到101条满足条件的数据，但是该索引执行完了，也就是EOF，不需要replan直接使用该plancache
             // Cached plan hit EOF quickly enough. No need to replan.
             return Status::OK();
         } else if (PlanStage::NEED_YIELD == state) {
@@ -159,18 +185,23 @@ Status CachedPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
         }
     }
 
+    //如果走到这里面，则说明需要replan
     // If we're here, the trial period took more than 'maxWorksBeforeReplan' work cycles. This
     // plan is taking too long, so we replan from scratch.
     auto explainer = plan_explainer_factory::make(child().get());
     LOGV2_DEBUG(20580,
                 1,
                 "Evicting cache entry and replanning query",
+                //
                 "maxWorksBeforeReplan"_attr = maxWorksBeforeReplan,
+                //缓存的plancache的work数
                 "decisionWorks"_attr = _decisionWorks,
                 "query"_attr = redact(_canonicalQuery->toStringShort()),
                 "planSummary"_attr = explainer->getPlanSummary());
 
     const bool shouldCache = true;
+
+    //CachedPlanStage::replan 重新生成plan
     return replan(
         yieldPolicy,
         shouldCache,
@@ -193,7 +224,8 @@ Status CachedPlanStage::tryYield(PlanYieldPolicy* yieldPolicy) {
 
     return Status::OK();
 }
-
+//是否需要重新生成plan
+//CachedPlanStage::pickBestPlan->CachedPlanStage::replan->MultiPlanStage::pickBestPlan重新选择最优索引生成plancache
 Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache, std::string reason) {
     // We're going to start over with a new plan. Clear out info from our old plan.
     {
@@ -208,6 +240,7 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache, s
     if (shouldCache) {
         // Deactivate the current cache entry.
         PlanCache* cache = CollectionQueryInfo::get(collection()).getPlanCache();
+        //"isActive" : false 置为false,old plan已经无效了
         cache->deactivate(*_canonicalQuery);
     }
 
@@ -220,7 +253,7 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache, s
     }
     auto solutions = std::move(statusWithSolutions.getValue());
 
-    if (1 == solutions.size()) {
+    if (1 == solutions.size()) {//说明只有一个候选索引
         // Only one possible plan. Build the stages from the solution.
         auto&& newRoot = stage_builder::buildClassicExecutableTree(
             expCtx()->opCtx, collection(), *_canonicalQuery, *solutions[0], _ws);
@@ -258,6 +291,7 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache, s
     }
 
     // Delegate to the MultiPlanStage's plan selection facility.
+    //MultiPlanStage::pickBestPlan中重新生成最优的执行计划
     Status pickBestPlanStatus = multiPlanStage->pickBestPlan(yieldPolicy);
     if (!pickBestPlanStatus.isOK()) {
         return pickBestPlanStatus;

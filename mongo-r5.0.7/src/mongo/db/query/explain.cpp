@@ -375,6 +375,8 @@ void Explain::planCacheEntryToBSON(const PlanCacheEntry& entry, BSONObjBuilder* 
 
     // Append whether or not the entry is active.
     out->append("isActive", entry.isActive);
+    // we can use 
+    out->append("counters", static_cast<long long>entry.queryCounters);
     out->append("works", static_cast<long long>(entry.works));
     out->append("timeOfCreation", entry.timeOfCreation);
 

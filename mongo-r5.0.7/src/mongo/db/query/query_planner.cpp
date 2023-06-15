@@ -482,6 +482,7 @@ Status QueryPlanner::tagAccordingToCache(MatchExpression* filter,
     return Status::OK();
 }
 
+////PrepareExecutionHelper::prepare() 
 StatusWith<std::unique_ptr<QuerySolution>> QueryPlanner::planFromCache(
     const CanonicalQuery& query,
     const QueryPlannerParams& params,
@@ -581,6 +582,9 @@ StatusWith<std::unique_ptr<QuerySolution>> QueryPlanner::planFromCache(
                 "solution"_attr = redact(soln->toString()));
     return {std::move(soln)};
 }
+
+//生成所有候选索引的QuerySolution
+//CachedPlanStage::replan  PrepareExecutionHelper::prepare() 
 
 // static
 StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
@@ -774,6 +778,17 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
                     "index"_attr = relevantIndices[i].toString());
     }
 
+    if (!hintedIndexEntry) {
+        QueryPlannerIXSelect::removeRepeatContainIndexes(relevantIndices);
+        for (size_t i = 0; i < relevantIndices.size(); ++i) {
+            LOGV2_DEBUG(20971,
+                        2,
+                        "After Remove Repeat Contain Btree And Hashed Index, Relevant index",
+                        "indexNumber"_attr = i,
+                        "index"_attr = relevantIndices[i].toString());
+        }
+    }
+    
     // Figure out how useful each index is to each predicate.
     QueryPlannerIXSelect::rateIndices(query.root(), "", relevantIndices, query.getCollator());
     QueryPlannerIXSelect::stripInvalidAssignments(query.root(), relevantIndices);
@@ -857,6 +872,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
     std::vector<std::unique_ptr<QuerySolution>> out;
 
     // If we have any relevant indices, we try to create indexed plans.
+    //这里面会排除一部分候选索引，例如{a:hashed}， 查询条件是{a>=1}，则{a:hashed}对应plan不会出现再out中
     if (0 < relevantIndices.size()) {
         // The enumerator spits out trees tagged with IndexTag(s).
         PlanEnumeratorParams enumParams;
@@ -944,6 +960,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
     // scan the entire index to provide results and output that as our plan.  This is the
     // desired behavior when an index is hinted that is not relevant to the query. In the case that
     // $** index is hinted, we do not want this behavior.
+    //只有一个候选索引
     if (!hintedIndex.isEmpty() && relevantIndices.size() == 1) {
         if (out.size() > 0) {
             return {std::move(out)};
@@ -967,7 +984,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
 
     // If a sort order is requested, there may be an index that provides it, even if that
     // index is not over any predicates in the query.
-    //
+    //有排序字段，则把排序字段对应候选索引加入，例如db.xxx.find({xxx}).sort({a:1, b:-1})
     if (query.getSortPattern() &&
         !QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR) &&
         !QueryPlannerCommon::hasNode(query.root(), MatchExpression::TEXT)) {
@@ -982,6 +999,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
             }
         }
 
+        //如果候选索引会内存排序，则把sort排序相关索引添加进来
         if (!usingIndexToSort) {
             for (size_t i = 0; i < fullIndexList.size(); ++i) {
                 const IndexEntry& index = fullIndexList[i];
@@ -999,6 +1017,8 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
                 // - Index {a: 1, b: "2dsphere"} (which is "geo-sparse", if
                 //   2dsphereIndexVersion=2) should be able to provide a sort for
                 //   find({b: GEO}).sort({a:1}).  SERVER-10801.
+
+                //这里有hash是因为{tag:1, tag2:"hashed"}中,tag是可以排序的
                 if (index.type != INDEX_BTREE && index.type != INDEX_HASHED) {
                     continue;
                 }
@@ -1019,6 +1039,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
                 }
 
                 const BSONObj kp = QueryPlannerAnalysis::getSortPattern(index.keyPattern);
+                //sort({a:1, b:-1})这个排序，则对应索引只能是{a:1, b:-1}或者{a:-1, b:1} ??? 为什么不可以走{a:1}，如果有{a:1}或者{a:-1}，走一个字段索引
                 if (providesSort(query, kp)) {
                     LOGV2_DEBUG(
                         20981, 5, "Planner: outputting soln that uses index to provide sort");
@@ -1035,6 +1056,10 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
                         out.push_back(std::move(soln));
                     }
                 }
+
+                //排序字段对应索引添加到候选索引中，并根据排序字段对应候选索引生成solution
+                //sort({a:1, b:-1})这个排序，则对应索引只能是{a:1, b:-1}或者{a:-1, b:1}
+                
                 if (providesSort(query, QueryPlannerCommon::reverseSortObj(kp))) {
                     LOGV2_DEBUG(
                         20982,

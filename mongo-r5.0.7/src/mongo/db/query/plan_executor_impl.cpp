@@ -174,6 +174,17 @@ PlanExecutorImpl::PlanExecutorImpl(OperationContext* opCtx,
     }
 }
 
+//PlanCache::getNewEntryState中决定plancache是否为active的
+
+//MultiPlanStage::pickBestPlan中确定是否需要淘汰老的plancache同时生成新的plancache
+//CachedPlanStage::pickBestPlan->CachedPlanStage::replan->MultiPlanStage::pickBestPlan重新选择最优
+//  索引生成最新plancache，同时淘汰老的plancache
+
+//配合阅读PrepareExecutionHelper::prepare()->getCacheEntryIfActive ，prepare中判断是否使用缓存的planCache，还是直接评分优化生成执行计划
+//MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
+
+//PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)->MultiPlanStage::pickBestPlan->MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
+
 Status PlanExecutorImpl::_pickBestPlan() {
     invariant(_currentState == kUsable);
     
@@ -182,13 +193,14 @@ Status PlanExecutorImpl::_pickBestPlan() {
     PlanStage* foundStage = getStageByType(_root.get(), STAGE_SUBPLAN);
     if (foundStage) {
         SubplanStage* subplan = static_cast<SubplanStage*>(foundStage);
+        //SubplanStage::pickBestPlan
         return subplan->pickBestPlan(_yieldPolicy.get());
     }
 
     // If we didn't have to do subplanning, we might still have to do regular
     // multi plan selection...
     foundStage = getStageByType(_root.get(), STAGE_MULTI_PLAN);
-    if (foundStage) { //多个plan，则需要评分选择最优的
+    if (foundStage) { //没有缓存的active plancache，则需要评分选择最优的
         MultiPlanStage* mps = static_cast<MultiPlanStage*>(foundStage);
         //MultiPlanStage::pickBestPlan
         return mps->pickBestPlan(_yieldPolicy.get()); 
@@ -197,8 +209,10 @@ Status PlanExecutorImpl::_pickBestPlan() {
     // ...or, we might have to run a plan from the cache for a trial period, falling back on
     // regular planning if the cached plan performs poorly.
     foundStage = getStageByType(_root.get(), STAGE_CACHED_PLAN);
-    if (foundStage) {//直接缓存的plancache
+    if (foundStage) {
+        //直接用缓存的plancache,plancache通过这里来判断是否老的失效，这里决定是否重新选择最优索引生成新的plancache
         CachedPlanStage* cachedPlan = static_cast<CachedPlanStage*>(foundStage);
+        //CachedPlanStage::pickBestPlan
         return cachedPlan->pickBestPlan(_yieldPolicy.get());
     }
 

@@ -43,7 +43,7 @@
 #include "mongo/logv2/log.h"
 
 namespace mongo::sbe {
-//getSlotBasedExecutor
+//getSlotBasedExecutor+makeRuntimePlannerIfNeeded
 CandidatePlans MultiPlanner::plan(
     std::vector<std::unique_ptr<QuerySolution>> solutions,
     std::vector<std::pair<std::unique_ptr<PlanStage>, stage_builder::PlanStageData>> roots) {
@@ -55,6 +55,7 @@ CandidatePlans MultiPlanner::plan(
     return finalizeExecutionPlans(std::move(decision), std::move(candidates));
 }
 
+//ÉÏÃæµÄMultiPlanner::plan
 CandidatePlans MultiPlanner::finalizeExecutionPlans(
     std::unique_ptr<mongo::plan_ranker::PlanRankingDecision> decision,
     std::vector<plan_ranker::CandidatePlan> candidates) const {

@@ -139,6 +139,7 @@ CandidatePlans SubPlanner::planWholeQuery() const {
     }
 
     MultiPlanner multiPlanner{_opCtx, _collection, _cq, PlanCachingMode::AlwaysCache, _yieldPolicy};
+    //MultiPlanner::plan
     return multiPlanner.plan(std::move(solutions), std::move(roots));
 }
 }  // namespace mongo::sbe

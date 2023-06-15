@@ -35,6 +35,7 @@
 
 namespace mongo {
 
+//{"t":{"$date":"2023-06-05T21:04:08.756+08:00"},"s":"D2", "c":"QUERY",    "id":20971,   "ctx":"conn199","msg":"Relevant index","attr":{"indexNumber":0,"index":"kp: { tag: 1.0 } name: '(tag_1, )' io: { v: 2, key: { tag: 1.0 }, name: \"tag_1\", expireAfterSeconds: 0.0 }"}}
 std::string IndexEntry::toString() const {
     StringBuilder sb;
     sb << "kp: " << keyPattern;
@@ -57,7 +58,7 @@ std::string IndexEntry::toString() const {
         sb << " filterExpr: " << filterExpr->debugString();
     }
 
-    if (!infoObj.isEmpty()) {
+    if (!infoObj.isEmpty()) {//这里也就是getIndex的详细索引信息
         sb << " io: " << infoObj;
     }
 

@@ -191,6 +191,8 @@ struct BaseCandidatePlan {
     // non-OK status.
     Status status{Status::OK()};
     // Any results produced during the plan's execution prior to scoring are retained here.
+
+    //¸³ÖµMultiPlanStage::workAllPlans
     std::queue<ResultType> results;
 };
 

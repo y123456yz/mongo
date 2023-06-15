@@ -64,7 +64,8 @@ protected:
         auto numReads{calculateNumberOfReads(root)};
         StringBuilder sb;
 
-        sb << "(" << (root->common.advances + 1) << " advances)/(" << numReads << " numReads)";
+        //in calculateProductivity func, add 1 to both the numerator and denominator, So we need to keep the results consistent 
+        sb << "(" << (root->common.advances) << " advances + 1)/(" << numReads << " numReads) + 1";
 
         return sb.str();
     }

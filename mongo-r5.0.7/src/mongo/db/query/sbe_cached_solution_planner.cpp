@@ -41,6 +41,9 @@
 #include "mongo/logv2/log.h"
 
 namespace mongo::sbe {
+//经典执行引擎: CachedPlanStage::pickBestPlan中确定是否需要淘汰老的plancache同时生成新的plancache
+//SBE执行引擎: CachedPlanStage::pickBestPlan中确定是否需要淘汰老的plancache同时生成新的plancache
+
 CandidatePlans CachedSolutionPlanner::plan(
     std::vector<std::unique_ptr<QuerySolution>> solutions,
     std::vector<std::pair<std::unique_ptr<PlanStage>, stage_builder::PlanStageData>> roots) {

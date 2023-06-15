@@ -61,6 +61,7 @@ struct SpecificStats {
 };
 
 // Every stage has CommonStats.
+//PlanStageStats
 struct CommonStats {
     CommonStats() = delete;
 
@@ -171,6 +172,7 @@ private:
     BasePlanStageStats& operator=(const BasePlanStageStats<C, T>&) = delete;
 };
 
+//MultiPlanStage::pickBestPlan
 using PlanStageStats = BasePlanStageStats<CommonStats, StageType>;
 
 struct AndHashStats : public SpecificStats {

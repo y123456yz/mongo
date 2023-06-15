@@ -540,7 +540,7 @@ private:
  *      normal stage builder process.
  *    * We have a QuerySolutionNode tree (or multiple query solution trees), but must execute some
  *      custom logic in order to build the final execution tree.
- */
+ */ //ClassicPrepareExecutionHelper和SlotBasedPrepareExecutionHelper继承该类
 template <typename PlanStageType, typename ResultType>
 class PrepareExecutionHelper {
 public:
@@ -556,12 +556,21 @@ public:
           _plannerOptions{plannerOptions} {
         invariant(_cq);
     }
-    //配合阅读PrepareExecutionHelper::prepare() ，prepare中判断是否使用缓存的planCache，还是重新生成新的planCache
-    //MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
-    
-    //PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)->MultiPlanStage::pickBestPlan->MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
 
-   //PrepareExecutionHelper::prepare()(本函数) 
+ //PlanCache::getNewEntryState中决定plancache是否为active的
+ 
+ //MultiPlanStage::pickBestPlan中确定是否需要淘汰老的plancache同时生成新的plancache
+ //CachedPlanStage::pickBestPlan->CachedPlanStage::replan->MultiPlanStage::pickBestPlan重新选择最优
+ //  索引生成最新plancache，同时淘汰老的plancache
+ 
+ //配合阅读PrepareExecutionHelper::prepare()->getCacheEntryIfActive ，prepare中判断是否使用缓存的planCache，还是直接评分优化生成执行计划
+ //MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
+ 
+ //PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)->MultiPlanStage::pickBestPlan->MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
+
+   
+//SBE执行引擎:getExecutor->getSlotBasedExecutor->PrepareExecutionHelper::prepare()
+//经典执行引擎:getExecutor->getClassicExecutor->PrepareExecutionHelper::prepare
     StatusWith<std::unique_ptr<ResultType>> prepare() {//PrepareExecutionHelper::prepare() 
         if (!_collection) {
             LOGV2_DEBUG(20921,
@@ -621,7 +630,7 @@ public:
                 CollectionQueryInfo::get(_collection).getPlanCache()->computeKey(*_cq);
             OpDebug& opDebug = CurOp::get(_opCtx)->debug();
             if (!opDebug.queryHash) {
-                opDebug.queryHash =
+                opDebug.queryHash = 
                     canonical_query_encoder::computeHash(planCacheKey.getStableKeyStringData());
             }
             if (!opDebug.planCacheKey) {
@@ -629,9 +638,11 @@ public:
                     canonical_query_encoder::computeHash(planCacheKey.toString());
             }
 
+            //判断是否使用缓存中的plancache
             // Try to look up a cached solution for the query.
             if (auto cs = CollectionQueryInfo::get(_collection)
                               .getPlanCache()
+                              //PlanCache::getNewEntryState中决定plancache是否为active的
                               ->getCacheEntryIfActive(planCacheKey)) {
                 // We have a CachedSolution.  Have the planner turn it into a QuerySolution.
                 auto statusWithQs = QueryPlanner::planFromCache(*_cq, plannerParams, *cs);
@@ -646,8 +657,14 @@ public:
                                     "query"_attr = redact(_cq->toStringShort()));
                     }
 
+                    PlanCache* cache = CollectionQueryInfo::get(_collection).getPlanCache();
+                    cache->increaseCacheQueryCounters(*_canonicalQuery);
+               
                     //生成CachedPlanStage
                     //PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)中使用
+                    
+                    //SBE执行引擎:getExecutor->getSlotBasedExecutor->PrepareExecutionHelper::prepare()->SlotBasedPrepareExecutionHelper::buildCachedPlan
+                    //经典执行引擎:getExecutor->getClassicExecutor->PrepareExecutionHelper::prepare->ClassicPrepareExecutionHelper::buildCachedPlan
                     return buildCachedPlan(
                         std::move(querySolution), plannerParams, cs->decisionWorks);
                 }
@@ -692,7 +709,7 @@ public:
             }
         }
 
-        if (1 == solutions.size()) {
+        if (1 == solutions.size()) {//只有一个候选索引，不用生成multiplan
             auto result = makeResult();
             // Only one possible plan. Run it. Build the stages from the solution.
             auto root = buildExecutableTree(*solutions[0]);
@@ -709,6 +726,8 @@ public:
 
         //生成MultiPlanStage
         //PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)中使用
+
+        //ClassicPrepareExecutionHelper::buildMultiPlan
         return buildMultiPlan(std::move(solutions), plannerParams);
     }
 
@@ -778,6 +797,8 @@ protected:
 /**
  * A helper class to prepare a classic PlanStage tree for execution.
  */
+//getExecutor->getSlotBasedExecutor->SlotBasedPrepareExecutionHelper::prepare
+//getExecutor->getClassicExecutor->ClassicPrepareExecutionHelper::prepare
 class ClassicPrepareExecutionHelper final
     : public PrepareExecutionHelper<std::unique_ptr<PlanStage>, ClassicPrepareExecutionResult> {
 public:
@@ -859,8 +880,11 @@ protected:
         return result;
     }
 
+    //SBE执行引擎:getExecutor->getSlotBasedExecutor->PrepareExecutionHelper::prepare()->SlotBasedPrepareExecutionHelper::buildCachedPlan
+    //经典执行引擎:getExecutor->getClassicExecutor->PrepareExecutionHelper::prepare->ClassicPrepareExecutionHelper::buildCachedPlan
+
     //生成CachedPlanStage
-    std::unique_ptr<ClassicPrepareExecutionResult> buildCachedPlan(
+    std::unique_ptr<ClassicPrepareExecutionResult> buildCachedPlan(//ClassicPrepareExecutionHelper::buildCachedPlan
         std::unique_ptr<QuerySolution> solution,
         const QueryPlannerParams& plannerParams,
         size_t decisionWorks) final {
@@ -894,7 +918,7 @@ protected:
     //PrepareExecutionHelper::prepare()-> buildMultiPlan->MultiPlanStage::addPlan
 
     //生成MultiPlanStage
-    std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan(
+    std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan(//ClassicPrepareExecutionHelper::buildMultiPlan
         std::vector<std::unique_ptr<QuerySolution>> solutions,
         const QueryPlannerParams& plannerParams) final {
         // Many solutions. Create a MultiPlanStage to pick the best, update the cache,
@@ -924,8 +948,10 @@ private:
 
 /**
  * A helper class to prepare an SBE PlanStage tree for execution.
- */
-class SlotBasedPrepareExecutionHelper final
+ */ 
+//getExecutor->getSlotBasedExecutor->SlotBasedPrepareExecutionHelper::prepare
+//getExecutor->getClassicExecutor->ClassicPrepareExecutionHelper::prepare
+class SlotBasedPrepareExecutionHelper final 
     : public PrepareExecutionHelper<
           std::pair<std::unique_ptr<sbe::PlanStage>, stage_builder::PlanStageData>,
           SlotBasedPrepareExecutionResult> {
@@ -1001,6 +1027,8 @@ protected:
         return result;
     }
 
+    //SBE执行引擎:getExecutor->getSlotBasedExecutor->PrepareExecutionHelper::prepare()->buildCachedPlan
+    //经典执行引擎:getExecutor->getClassicExecutor->PrepareExecutionHelper::prepare->buildCachedPlan
     std::unique_ptr<SlotBasedPrepareExecutionResult> buildCachedPlan(
         std::unique_ptr<QuerySolution> solution,
         const QueryPlannerParams& plannerParams,
@@ -1037,6 +1065,10 @@ protected:
     }
 };
 
+
+//SBE执行引擎:getExecutor->getSlotBasedExecutor->PrepareExecutionHelper::prepare()
+//经典执行引擎:getExecutor->getClassicExecutor->PrepareExecutionHelper::prepare
+
 StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getClassicExecutor(
     OperationContext* opCtx,
     const CollectionPtr* collection,
@@ -1046,6 +1078,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getClassicExecu
     auto ws = std::make_unique<WorkingSet>();
     ClassicPrepareExecutionHelper helper{
         opCtx, *collection, ws.get(), canonicalQuery.get(), nullptr, plannerOptions};
+    //PrepareExecutionHelper::prepare
     auto executionResult = helper.prepare();
     if (!executionResult.isOK()) {
         return executionResult.getStatus();
@@ -1069,7 +1102,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getClassicExecu
  * Checks if the prepared execution plans require further planning in runtime to pick the best
  * plan based on the collected execution stats, and returns a 'RuntimePlanner' instance if such
  * planning needs to be done, or nullptr otherwise.
- */
+ */ //生成sbe::MultiPlanner::plan  sbe::SubPlanner::plan  sbe::CachedSolutionPlanner::plan
 std::unique_ptr<sbe::RuntimePlanner> makeRuntimePlannerIfNeeded(
     OperationContext* opCtx,
     const CollectionPtr& collection,
@@ -1096,7 +1129,7 @@ std::unique_ptr<sbe::RuntimePlanner> makeRuntimePlannerIfNeeded(
         QueryPlannerParams plannerParams;
         plannerParams.options = plannerOptions;
         fillOutPlannerParams(opCtx, collection, canonicalQuery, &plannerParams);
-
+        
         return std::make_unique<sbe::SubPlanner>(
             opCtx, collection, *canonicalQuery, plannerParams, yieldPolicy);
     }
@@ -1133,6 +1166,10 @@ std::unique_ptr<PlanYieldPolicySBE> makeSbeYieldPolicy(
                                                 std::make_unique<YieldPolicyCallbacksImpl>(nss));
 }
 
+
+//SBE执行引擎:getExecutor->getSlotBasedExecutor->PrepareExecutionHelper::prepare()
+//经典执行引擎:getExecutor->getClassicExecutor->PrepareExecutionHelper::prepare
+
 StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getSlotBasedExecutor(
     OperationContext* opCtx,
     const CollectionPtr* collection,
@@ -1144,6 +1181,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getSlotBasedExe
     auto yieldPolicy = makeSbeYieldPolicy(opCtx, requestedYieldPolicy, collection, nss);
     SlotBasedPrepareExecutionHelper helper{
         opCtx, *collection, cq.get(), yieldPolicy.get(), plannerOptions};
+    //PrepareExecutionHelper::prepare
     auto executionResult = helper.prepare();
     if (!executionResult.isOK()) {
         return executionResult.getStatus();
@@ -1153,6 +1191,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getSlotBasedExe
     auto&& roots = result->roots();
     auto&& solutions = result->solutions();
 
+    //生成sbe::MultiPlanner   sbe::SubPlanner   sbe::CachedSolutionPlanner 
     if (auto planner = makeRuntimePlannerIfNeeded(opCtx,
                                                   *collection,
                                                   cq.get(),
@@ -1162,6 +1201,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getSlotBasedExe
                                                   yieldPolicy.get(),
                                                   plannerOptions)) {
         // Do the runtime planning and pick the best candidate plan.
+        //生成sbe::MultiPlanner::plan  sbe::SubPlanner::plan  sbe::CachedSolutionPlanner::plan
         auto candidates = planner->plan(std::move(solutions), std::move(roots));
         return plan_executor_factory::make(opCtx,
                                            std::move(cq),
@@ -1222,9 +1262,9 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutor(
     size_t plannerOptions) {
     return canonicalQuery->getEnableSlotBasedExecutionEngine() &&
             isQuerySbeCompatible(opCtx, canonicalQuery.get(), plannerOptions)
-        ? getSlotBasedExecutor(
+        ? getSlotBasedExecutor(//sbe查询引擎
               opCtx, collection, std::move(canonicalQuery), yieldPolicy, plannerOptions)
-        : getClassicExecutor(
+        : getClassicExecutor(//经典查询引擎
               opCtx, collection, std::move(canonicalQuery), yieldPolicy, plannerOptions);
 }
 

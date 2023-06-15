@@ -49,6 +49,7 @@
 #include "mongo/db/query/planner_wildcard_helpers.h"
 #include "mongo/db/query/query_planner_common.h"
 #include "mongo/logv2/log.h"
+#include "mongo/bson/simple_bsonelement_comparator.h"
 
 namespace mongo {
 
@@ -313,14 +314,133 @@ std::vector<IndexEntry> QueryPlannerIXSelect::findIndexesByHint(
     return out;
 }
 
+BSONObj QueryPlannerAnalysis::getSortPattern2(const BSONObj& indexKeyPattern) {
+    BSONObjBuilder sortBob;
+    BSONObjIterator kpIt(indexKeyPattern);
+    while (kpIt.more()) {
+        BSONElement elt = kpIt.next();
+        if (elt.type() == mongo::String) {
+            break;
+        }
+        // The canonical check as to whether a key pattern element is "ascending" or "descending" is
+        // (elt.number() >= 0). This is defined by the Ordering class.
+        int sortOrder = (elt.number() >= 0) ? 1 : -1;
+        sortBob.append(elt.fieldName(), sortOrder);
+    }
+    return sortBob.obj();
+}
+
+// remove repeat contain index from the relevant candidate indexes, this can avoid some useless calculations.
+// for example:
+//   {a:1, b:1} contain {a:1}, so we can remove index {a:1} from the candidates
+//   {a:"hashed", b:1} contain {a:"hashed"}, so we can remove index {a:"hahsed"} from the candidates
+//
+// {a:1, b:1} is better than {a:1},because both cases are satisfied for db.collection.find({a:xx}) 
+//    and db.collection.find({a:xx,b:xx})
+//
+void QueryPlannerIXSelect::removeRepeatContainIndexes(std::vector<IndexEntry>& allIndices) {
+    if (allIndices.size() <= 1)
+       return;
+
+    auto isSpecialIndex = [](auto& it) {
+        if (it->type != INDEX_BTREE && it->type != INDEX_HASHED) {
+            return true;
+        }
+        
+        if (it->sparse || it->unique) {
+            return true;
+        }
+
+        if (it->collator) {
+            return true;
+        }
+        
+        if (it->filterExpr) {
+            return true;
+        }
+
+        BSONElement e = it->infoObj[IndexDescriptor::kExpireAfterSecondsFieldName];
+        if (e.isNumber() == false) {
+            return false;
+        }
+        
+        auto expireTime = e.number();
+        if (expireTime >= 0) {
+            return true;
+        } else {
+            return false;
+        }
+    };
+
+    auto dealKeyPattern = [](BSONObj& indexKeyPattern) {
+        BSONObjBuilder build;
+        BSONObjIterator kpIt(indexKeyPattern);
+        while (kpIt.more()) {
+            BSONElement elt = kpIt.next();
+            if (elt.type() == mongo::String) {
+                build.append(elt.fieldName(), elt.String());
+                continue;
+            }
+            
+            // The canonical check as to whether a key pattern element is "ascending" or "descending" is
+            // (elt.number() >= 0). This is defined by the Ordering class.  
+            invariant(elt.isNumber());
+            int sortOrder = (elt.number() >= 0) ? 1 : -1;
+            build.append(elt.fieldName(), sortOrder);
+        }
+        
+        return build.obj();
+    };
+
+    for (auto iterator1 = allIndices.begin(); iterator1 != allIndices.end();) {
+        if (isSpecialIndex(iterator1) == true) {
+            ++iterator1;
+            continue;
+        }
+
+        BSONObj keyPattern1 = dealKeyPattern((*iterator1).keyPattern);
+
+        bool eraseIterator1 = false;
+        auto iterator2 = iterator1;
+        ++iterator2;
+        while (iterator2 != allIndices.end()) {
+            if (isSpecialIndex(iterator2) == true) {
+                ++iterator2;
+                continue;
+            }
+            
+            BSONObj keyPattern2 = dealKeyPattern((*iterator2).keyPattern);
+            
+            if (keyPattern2.isPrefixOf(keyPattern1, SimpleBSONElementComparator::kInstance)) {
+                iterator2 = allIndices.erase(iterator2);
+            } else if (keyPattern1.isPrefixOf(keyPattern2, SimpleBSONElementComparator::kInstance)) {
+                iterator1 = allIndices.erase(iterator1);
+                eraseIterator1 = true;
+                break;
+            } else {
+                ++iterator2;
+            }
+        }
+
+        if (eraseIterator1 == false)
+            iterator1++;
+    }
+}
+
 // static
 std::vector<IndexEntry> QueryPlannerIXSelect::findRelevantIndices(
     const stdx::unordered_set<std::string>& fields, const std::vector<IndexEntry>& allIndices) {
 
     std::vector<IndexEntry> out;
     for (auto&& entry : allIndices) {
-        BSONObjIterator it(entry.keyPattern);
+        BSONObjIterator it(entry.keyPattern);   //providesSort
+        //这里只比较索引字段得第一个key，例如索引{kye1:1, key2:1}，则只比较key1，最左原则
         BSONElement elt = it.next();
+        LOGV2_DEBUG(211952,
+            4,
+            "QueryPlannerIXSelect::findRelevantIndices",
+            "elt.fieldName()"_attr = elt.fieldName(),
+            "indexString"_attr=entry.toString());
         if (fields.end() != fields.find(elt.fieldName())) {
             out.push_back(entry);
         }

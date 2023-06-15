@@ -230,6 +230,7 @@ std::unique_ptr<PlanCacheEntry> PlanCacheEntry::create(
                                                               std::move(debugInfo)));
 }
 
+//PlanCache::set->PlanCacheEntry::create中构造生成
 PlanCacheEntry::PlanCacheEntry(std::unique_ptr<const SolutionCacheData> plannerData,
                                const Date_t timeOfCreation,
                                const uint32_t queryHash,
@@ -242,6 +243,7 @@ PlanCacheEntry::PlanCacheEntry(std::unique_ptr<const SolutionCacheData> plannerD
       queryHash(queryHash),
       planCacheKey(planCacheKey),
       isActive(isActive),
+      queryCounters(0),
       works(works),
       debugInfo(std::move(debugInfo)),
       estimatedEntrySizeBytes(_estimateObjectSizeInBytes()) {
@@ -437,6 +439,18 @@ PlanCache::PlanCache(size_t size) : _cache(size) {}
 
 PlanCache::~PlanCache() {}
 
+//PlanCache::getNewEntryState中决定plancache是否为active的
+
+//MultiPlanStage::pickBestPlan中确定是否需要淘汰老的plancache同时生成新的plancache
+//CachedPlanStage::pickBestPlan->CachedPlanStage::replan->MultiPlanStage::pickBestPlan重新选择最优
+//  索引生成最新plancache，同时淘汰老的plancache
+
+//配合阅读PrepareExecutionHelper::prepare()->getCacheEntryIfActive ，prepare中判断是否使用缓存的planCache，还是直接评分优化生成执行计划
+//MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
+
+//PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)->MultiPlanStage::pickBestPlan->MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
+
+
 //QueryPlanner::planSubqueries   //PrepareExecutionHelper::prepare()
 std::unique_ptr<CachedSolution> PlanCache::getCacheEntryIfActive(const PlanCacheKey& key) const {
     PlanCache::GetResult res = get(key);
@@ -456,7 +470,20 @@ std::unique_ptr<CachedSolution> PlanCache::getCacheEntryIfActive(const PlanCache
  * whether:
  * - We should create a new entry
  * - The new entry should be marked 'active'
- */ //PlanCache::set
+ */ 
+//PlanCache::getNewEntryState中决定plancache是否为active的
+
+//MultiPlanStage::pickBestPlan中确定是否需要淘汰老的plancache同时生成新的plancache
+//CachedPlanStage::pickBestPlan->CachedPlanStage::replan->MultiPlanStage::pickBestPlan重新选择最优
+//  索引生成最新plancache，同时淘汰老的plancache
+
+//配合阅读PrepareExecutionHelper::prepare()->getCacheEntryIfActive ，prepare中判断是否使用缓存的planCache，还是直接评分优化生成执行计划
+//MultiPlanStage在PrepareExecutionHelper::prepare()->std::unique_ptr<ClassicPrepareExecutionResult> buildMultiPlan中生成
+
+//PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)->MultiPlanStage::pickBestPlan->MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
+
+
+//PlanCache::set调用
 PlanCache::NewEntryState PlanCache::getNewEntryState(const CanonicalQuery& query,
                                                      uint32_t queryHash,
                                                      uint32_t planCacheKey,
@@ -505,7 +532,8 @@ PlanCache::NewEntryState PlanCache::getNewEntryState(const CanonicalQuery& query
         // There is already an active cache entry with a lower works value.
         // We do nothing.
         res.shouldBeCreated = false;
-    } else if (newWorks > oldEntry->works) {
+    } else if (newWorks > oldEntry->works) { 
+    //如果缓存的plancache不是active的，则修改该plancache对应的work不停增加，当多次同类SQL请求的(newWorks <= oldEntry->works)，则周在下面的分钟进入active
         // This plan performed worse than expected. Rather than immediately overwriting the
         // cache, lower the bar to what is considered good performance and keep the entry
         // inactive.
@@ -529,7 +557,7 @@ PlanCache::NewEntryState PlanCache::getNewEntryState(const CanonicalQuery& query
 
         // Don't create a new entry.
         res.shouldBeCreated = false;
-    } else {
+    } else { //(newWorks <= oldEntry->works)
         //一类请求的第一个SQL会生成执行计划缓存起来，如果这类SQL第二次请求进来，并且work数不大于第一次，则标识这个缓存起来的plancache正式有效active的
         // This plan performed just as well or better than we expected, based on the
         // inactive entry's works. We use this as an indicator that it's safe to
@@ -550,7 +578,7 @@ PlanCache::NewEntryState PlanCache::getNewEntryState(const CanonicalQuery& query
     return res;
 }
 
-//配合阅读PrepareExecutionHelper::prepare() ，prepare中判断是否使用缓存的planCache，还是重新生成新的planCache
+//配合阅读PrepareExecutionHelper::prepare() ，prepare中判断是否使用缓存的planCache 
 //MultiPlanStage::pickBestPlan->updatePlanCache->PlanCache::set
 Status PlanCache::set(const CanonicalQuery& query,
                       const std::vector<QuerySolution*>& solns,
@@ -589,6 +617,7 @@ Status PlanCache::set(const CanonicalQuery& query,
                                                  return calculateNumberOfReads(
                                                      details.candidatePlanStats[0].get());
                                              }},
+                    //参数源头在这里
                     why->stats);
     const auto key = computeKey(query);
     stdx::lock_guard<Latch> cacheLock(_cacheMutex);
@@ -621,14 +650,17 @@ Status PlanCache::set(const CanonicalQuery& query,
             worksGrowthCoefficient.get_value_or(internalQueryCacheWorksGrowthCoefficient));
 
         if (!newState.shouldBeCreated) {
+            //走到这里说明不需要生成新的plan，直接返回
             return Status::OK();
         }
         isNewEntryActive = newState.shouldBeActive;
     }
 
+    //生成新的plan
     auto newEntry(PlanCacheEntry::create(
         solns, std::move(why), query, queryHash, planCacheKey, now, isNewEntryActive, newWorks));
 
+    //同样的key，老的newEntry会清理掉，新的会替换
     std::unique_ptr<PlanCacheEntry> evictedEntry = _cache.add(key, newEntry.release());
 
     if (nullptr != evictedEntry.get()) {
@@ -642,6 +674,7 @@ Status PlanCache::set(const CanonicalQuery& query,
     return Status::OK();
 }
 
+//CachedPlanStage::replan
 void PlanCache::deactivate(const CanonicalQuery& query) {
     if (internalQueryCacheDisableInactiveEntries.load()) {
         // This is a noop if inactive entries are disabled.
@@ -658,7 +691,20 @@ void PlanCache::deactivate(const CanonicalQuery& query) {
     }
     invariant(entry);
     entry->isActive = false;
-}
+}//queryCounters
+
+void PlanCache::increaseCacheQueryCounters(const CanonicalQuery& query) {
+    PlanCacheKey key = computeKey(query);
+    stdx::lock_guard<Latch> cacheLock(_cacheMutex);
+    PlanCacheEntry* entry = nullptr;
+    Status cacheStatus = _cache.get(key, &entry);
+    if (!cacheStatus.isOK()) {
+        invariant(cacheStatus == ErrorCodes::NoSuchKey);
+        return;
+    }
+    invariant(entry);
+    entry->queryCounters++;
+}//queryCounters
 
 PlanCache::GetResult PlanCache::get(const CanonicalQuery& query) const {
     PlanCacheKey key = computeKey(query);

@@ -157,10 +157,37 @@ IndexDescriptor::Comparison IndexDescriptor::compareIndexOptions(
     // being compared against an index that already exists in the catalog.
     tassert(4765900, "This object must be a candidate index", !getEntry());
 
+    //btree index check, avoid create duplicate btree indexes, Avoid affecting performance by the deplicate index.
+    //for example:
+    // add two index: db.collection.createIndex({a:1}) and db.collection.createIndex({a:11})
+    // the tow index are actually the same, One of them is a useless index, but it can affect the insert performance.
+    //
+    // In addition, They also affecting query performance because both are candidate indexes.
+    auto dealBtreeKeyPattern = [&](const BSONObj& indexKeyPattern) {
+        if (getIndexType() != INDEX_BTREE) {
+             return indexKeyPattern;
+        }
+        
+        BSONObjBuilder build;
+        BSONObjIterator kpIt(indexKeyPattern);
+        while (kpIt.more()) {
+            BSONElement elt = kpIt.next();
+            
+            // The canonical check as to whether a key pattern element is "ascending" or "descending" is
+            // (elt.number() >= 0). This is defined by the Ordering class.  
+            invariant(elt.isNumber());
+            int sortOrder = (elt.number() >= 0) ? 1 : -1;
+            build.append(elt.fieldName(), sortOrder);
+        }
+        
+        return build.obj();
+    };
+    
+    BSONObj newKeyPattern = dealBtreeKeyPattern(keyPattern());
     auto existingIndexDesc = existingIndex->descriptor();
 
     // We first check whether the key pattern is identical for both indexes.
-    if (SimpleBSONObjComparator::kInstance.evaluate(keyPattern() !=
+    if (SimpleBSONObjComparator::kInstance.evaluate(newKeyPattern !=
                                                     existingIndexDesc->keyPattern())) {
         return Comparison::kDifferent;
     }

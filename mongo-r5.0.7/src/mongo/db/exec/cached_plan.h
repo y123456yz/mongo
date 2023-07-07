@@ -39,6 +39,7 @@
 #include "mongo/db/query/query_planner_params.h"
 #include "mongo/db/query/query_solution.h"
 #include "mongo/db/record_id.h"
+#include "mongo/platform/atomic_word.h"
 
 namespace mongo {
 
@@ -71,6 +72,10 @@ public:
 
     StageType stageType() const final {
         return STAGE_CACHED_PLAN;
+    }
+    
+    size_t getDecisionWorks() const {
+        return _decisionWorks.load();
     }
 
     std::unique_ptr<PlanStageStats> getStats() final;
@@ -120,7 +125,8 @@ private:
 
     // The number of work cycles taken to decide on a winning plan when the plan was first
     // cached.
-    size_t _decisionWorks;
+    //size_t _decisionWorks;   _currentConnections.store(connectionCount);
+    AtomicWord<size_t> _decisionWorks{0};
 
     // If we fall back to re-planning the query, and there is just one resulting query solution,
     // that solution is owned here.

@@ -201,6 +201,7 @@ std::unique_ptr<PlanCacheEntry> PlanCacheEntry::create(
         internalQueryCacheMaxSizeBytesBeforeStripDebugInfo.load();
 
     boost::optional<DebugInfo> debugInfo;
+    //如果plancache没有超过internalQueryCacheMaxSizeBytesBeforeStripDebugInfo限制，则所有候选索引的执行计划都会被缓存起来
     if (includeDebugInfo) {
         // Strip projections on $-prefixed fields, as these are added by internal callers of the
         // system and are not considered part of the user projection.
@@ -704,7 +705,7 @@ void PlanCache::increaseCacheQueryCounters(const CanonicalQuery& query) {
     }
     invariant(entry);
     entry->queryCounters++;
-}//queryCounters
+} 
 
 PlanCache::GetResult PlanCache::get(const CanonicalQuery& query) const {
     PlanCacheKey key = computeKey(query);

@@ -539,13 +539,17 @@ public:
      * The return value will provide the "state" of the cache entry, as well as the CachedSolution
      * for the query (if there is one).
      */
+        */
     GetResult get(const PlanCacheKey& key) const;
 
     /**
      * If the cache entry exists and is active, return a CachedSolution. If the cache entry is
      * inactive, log a message and return a nullptr. If no cache entry exists, return a nullptr.
-     */
     std::unique_ptr<CachedSolution> getCacheEntryIfActive(const PlanCacheKey& key) const;
+
+    /**
+     * increase the query counters that hit this cached plan
+     */
     void increaseCacheQueryCounters(const CanonicalQuery& query);
 
     /**

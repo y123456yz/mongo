@@ -331,6 +331,7 @@ private:
         }
 
         BSONObj spec = collection->getIndexSpec(indexName);
+        //检查表对应索引是否为过期索引
         if (!spec.hasField(IndexDescriptor::kExpireAfterSecondsFieldName)) {
             ttlCollectionCache->deregisterTTLInfo(collection->uuid(), indexName);
             return;
@@ -349,6 +350,8 @@ private:
             return;
         }
 
+        //有过期索引得表都会进入这里
+        //{"t":{"$date":"2023-06-20T21:35:33.609+08:00"},"s":"D1", "c":"INDEX",    "id":22533,   "ctx":"TTLMonitor","msg":"running TTL job for index","attr":{"namespace":"yyz.ttl","key":{"data":1},"name":"data_1"}}
         LOGV2_DEBUG(22533,
                     1,
                     "running TTL job for index",
@@ -397,6 +400,10 @@ private:
         const char* keyFieldName = key.firstElement().fieldName();
         BSONObj query =
             BSON(keyFieldName << BSON("$gte" << kDawnOfTime << "$lte" << expirationDate));
+
+        LOGV2(36866666, "ttl yang test.. query:", 
+                        logAttrs(collection->ns()),
+                        "query sql:"_attr = query.toString());
         auto findCommand = std::make_unique<FindCommandRequest>(collection->ns());
         findCommand->setFilter(query);
         auto canonicalQuery = CanonicalQuery::canonicalize(opCtx, std::move(findCommand));

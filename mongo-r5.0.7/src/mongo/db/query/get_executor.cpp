@@ -658,7 +658,7 @@ public:
                     }
 
                     PlanCache* cache = CollectionQueryInfo::get(_collection).getPlanCache();
-                    cache->increaseCacheQueryCounters(*_canonicalQuery);
+                    cache->increaseCacheQueryCounters(*_cq);
                
                     //生成CachedPlanStage
                     //PlanExecutorImpl::_pickBestPlan(SubplanStage  MultiPlanStage  CachedPlanStage)中使用

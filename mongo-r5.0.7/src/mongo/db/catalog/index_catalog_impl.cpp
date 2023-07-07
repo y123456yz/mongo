@@ -1177,11 +1177,15 @@ const IndexDescriptor* IndexCatalogImpl::findIndexByName(OperationContext* opCtx
     return nullptr;
 }
 
+//key,indexSpec对应新加的索引参数信息，从已有的getIndexIterator索引中查找
 const IndexDescriptor* IndexCatalogImpl::findIndexByKeyPatternAndOptions(
     OperationContext* opCtx,
+    //例如 db.test.createIndex({a:1}, { expireAfterSeconds: 0}) 中的{a:1}
     const BSONObj& key,
+    //例如 db.test.createIndex({a:1}, { expireAfterSeconds: 0}) 中的{ expireAfterSeconds: 0}
     const BSONObj& indexSpec,
     bool includeUnfinishedIndexes) const {
+    //遍历所有已存在所有的游标
     std::unique_ptr<IndexIterator> ii = getIndexIterator(opCtx, includeUnfinishedIndexes);
     IndexDescriptor needle(_getAccessMethodName(key), indexSpec);
     while (ii->more()) {

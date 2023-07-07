@@ -76,7 +76,7 @@ public:
             cpuFactor = cmdObj["cpuFactor"].number();
         }
 
-        //Timer t{};
+       // Timer t{};
         long long limit = 10000 * cpuFactor;
         // volatile used to ensure that loop is not optimized away
         volatile uint64_t lresult = 0;  // NOLINT
@@ -88,7 +88,7 @@ public:
 
         auto durationTime = clock->now() - startTime;
 
-        //result.append("durationMillis", Milliseconds(t.millis()).toString());
+        result.append("durationMillis", t.millis());
         result.append("durationMillis", durationCount<Milliseconds>(durationTime));
         result.append("durationSeconds", durationCount<Seconds>(durationTime));
         return true;

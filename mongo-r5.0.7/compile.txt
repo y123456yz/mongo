@@ -1,5 +1,8 @@
 nohup python buildscripts/resmoke.py --suites=sharding,sharding_auth,aggregation,aggregation_auth,aggregation_facet_unwind_passthrough,aggregation_sharded_collections_passthrough,audit,backup,bulk_gle_passthrough,concurrency,concurrency_replication,concurrency_sharded,core,core_auth,core_compression,core_minimum_batch_size,core_op_query,dbtest,decimal,disk,dur_jscore_passthrough,durability,failpoints,failpoints_auth,gle_auth,gle_auth_basics_passthrough,httpinterface,knobs,master_slave,master_slave_auth,master_slave_jscore_passthrough,mmap,mongos_test,auth,auth_audit,external_auth --continueOnFailure --log=file --dbpathPrefix=/disk1/shenmengye/percona-server-mongodb/nonblocking --jobs=10 --basePort=20003 >log&
 
+./configure --prefix=/usr/local/python-3.8.8  --enable-shared CFLAGS=-fPIC --enable-optimizations  升级python时候源码编译一定带上，否则高版本wiredtiger编译的时候会报错
+
+
 5.0集成测试python版本3.7.14没问题，其他版本有问题
 scons 需要 scons-4.0.0版本，否则scons unittests会执行不起来，参考https://blog.csdn.net/p1279030826/article/details/111464816
 使用python3.7.14同样目录中得scons，保持版本一致

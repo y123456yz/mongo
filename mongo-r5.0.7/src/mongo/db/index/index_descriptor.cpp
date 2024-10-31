@@ -165,7 +165,11 @@ IndexDescriptor::Comparison IndexDescriptor::compareIndexOptions(
     // In addition, They also affecting query performance because both are candidate indexes.
     auto dealBtreeKeyPattern = [&](const BSONObj& indexKeyPattern) {
         if (getIndexType() != INDEX_BTREE) {
-             return indexKeyPattern;
+            return indexKeyPattern;
+        }
+
+        if (hidden() == true) {
+            return indexKeyPattern;
         }
         
         BSONObjBuilder build;

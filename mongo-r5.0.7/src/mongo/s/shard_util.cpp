@@ -152,6 +152,7 @@ StatusWith<std::vector<BSONObj>> selectChunkSplitPoints(OperationContext* opCtx,
     return response.getSplitKeys();
 }
 
+//ÀýÈç×öÔ¤·ÖÆ¬sh.shardCollection("appdb.book", {bookId:"hashed"}, false, { numInitialChunks: 81920} )
 StatusWith<boost::optional<ChunkRange>> splitChunkAtMultiplePoints(
     OperationContext* opCtx,
     const ShardId& shardId,

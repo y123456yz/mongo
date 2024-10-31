@@ -79,6 +79,7 @@ ThreadPool::Options makeDefaultThreadPoolOptions() {
 /**
  * Attempts to split the chunk described by min/maxKey at the split points provided.
  */
+//ÀýÈç×öÔ¤·ÖÆ¬sh.shardCollection("appdb.book", {bookId:"hashed"}, false, { numInitialChunks: 81920} )
 Status splitChunkAtMultiplePoints(OperationContext* opCtx,
                                   const ShardId& shardId,
                                   const NamespaceString& nss,

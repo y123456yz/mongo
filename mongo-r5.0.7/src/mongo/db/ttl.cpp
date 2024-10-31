@@ -78,6 +78,10 @@ MONGO_FAIL_POINT_DEFINE(hangTTLMonitorWithLock);
 Counter64 ttlPasses;
 Counter64 ttlDeletedDocuments;
 
+//        "ttlMonitorEnabled" : true,     db.adminCommand( { setParameter: 1, ttlMonitorEnabled: true } )
+//        "ttlMonitorSleepSecs" : 60,     db.adminCommand( { setParameter: 1, ttlMonitorSleepSecs: 10 } )
+
+
 ServerStatusMetricField<Counter64> ttlPassesDisplay("ttl.passes", &ttlPasses);
 ServerStatusMetricField<Counter64> ttlDeletedDocumentsDisplay("ttl.deletedDocuments",
                                                               &ttlDeletedDocuments);

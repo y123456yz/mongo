@@ -443,6 +443,8 @@ std::vector<BSONObj> CommonMongodProcessInterface::getMatchingPlanCacheEntryStat
     const auto planCache = CollectionQueryInfo::get(collection.getCollection()).getPlanCache();
     invariant(planCache);
 
+    //这里面会遍历_cache，然后执行serializer，执行前会加锁_cacheMutex，所以serializer中的entry.queryCounters不用加锁
+    //getMatchingPlanCacheEntryStats->getMatchingStats中会_cacheMutex加锁，所以这里无需加锁
     return planCache->getMatchingStats(serializer, predicate);
 }
 

@@ -1212,6 +1212,7 @@ void IndexCatalogImpl::findIndexesByKeyPattern(OperationContext* opCtx,
     }
 }
 
+//找到shardkey对应的索引
 const IndexDescriptor* IndexCatalogImpl::findShardKeyPrefixedIndex(OperationContext* opCtx,
                                                                    const BSONObj& shardKey,
                                                                    bool requireSingleKey) const {

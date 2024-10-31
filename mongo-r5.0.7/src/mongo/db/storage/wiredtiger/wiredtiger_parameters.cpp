@@ -41,7 +41,7 @@ using std::string;
 void WiredTigerEngineRuntimeConfigParameter::append(OperationContext* opCtx,
                                                     BSONObjBuilder& b,
                                                     const std::string& name) {
-    b << name << _data.first;
+    b << name << _data.second->get_configuration();
 }
 
 Status WiredTigerEngineRuntimeConfigParameter::setFromString(const std::string& str) {
@@ -60,6 +60,7 @@ Status WiredTigerEngineRuntimeConfigParameter::setFromString(const std::string& 
           "config"_attr = str);
 
     invariant(_data.second);
+    //存储引擎参数信息从新配置
     int ret = _data.second->reconfigure(str.c_str());
     if (ret != 0) {
         const char* errorStr = wiredtiger_strerror(ret);
@@ -73,6 +74,7 @@ Status WiredTigerEngineRuntimeConfigParameter::setFromString(const std::string& 
         return Status(ErrorCodes::BadValue, result);
     }
 
+	//data: 'std::pair<std::string, WiredTigerKVEngine*>'类型
     _data.first = str;
     return Status::OK();
 }

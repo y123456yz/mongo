@@ -128,6 +128,7 @@ bool checkMetadataForSuccessfulSplitChunk(OperationContext* opCtx,
 
 }  // namespace
 
+//splitChunkAtMultiplePoints
 StatusWith<boost::optional<ChunkRange>> splitChunk(OperationContext* opCtx,
                                                    const NamespaceString& nss,
                                                    const BSONObj& keyPatternObj,

@@ -46,310 +46,363 @@
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/logv2/log.h"
 
-namespace mongo {
-namespace {
-
-constexpr int estimatedAdditionalBytesPerItemInBSONArray{2};
-
-constexpr int kMaxSplitPointsToReposition{3};
-
-BSONObj prettyKey(const BSONObj& keyPattern, const BSONObj& key) {
-    return key.replaceFieldNames(keyPattern).clientReadable();
-}
-
-/*
- * Takes the given min/max BSON objects that are a prefix of the shardKey and return two new BSON
- * object extended to cover the entire shardKey. See KeyPattern::extendRangeBound documentation for
- * some examples.
- */
-const std::tuple<BSONObj, BSONObj> getMinMaxExtendedBounds(const IndexDescriptor* shardKeyIdx,
-                                                           const BSONObj& min,
-                                                           const BSONObj& max) {
-    KeyPattern kp(shardKeyIdx->keyPattern());
-
-    // Extend min to get (min, MinKey, MinKey, ....)
-    BSONObj minKey = Helpers::toKeyFormat(kp.extendRangeBound(min, false /* upperInclusive */));
-    BSONObj maxKey;
-    if (max.isEmpty()) {
-        // if max not specified, make it (MaxKey, Maxkey, MaxKey...)
-        maxKey = Helpers::toKeyFormat(kp.extendRangeBound(max, true /* upperInclusive */));
-    } else {
-        // otherwise make it (max,MinKey,MinKey...) so that bound is non-inclusive
-        maxKey = Helpers::toKeyFormat(kp.extendRangeBound(max, false /* upperInclusive*/));
-    }
-
-    return {minKey, maxKey};
-}
-
-/*
- * Reshuffle fields according to the shard key pattern.
- */
-auto orderShardKeyFields(const BSONObj& keyPattern, BSONObj& key) {
-    return dotted_path_support::extractElementsBasedOnTemplate(
-        prettyKey(keyPattern, key.getOwned()), keyPattern);
-}
-
-}  // namespace
-
-std::vector<BSONObj> autoSplitVector(OperationContext* opCtx,
-                                     const NamespaceString& nss,
-                                     const BSONObj& keyPattern,
-                                     const BSONObj& min,
-                                     const BSONObj& max,
-                                     long long maxChunkSizeBytes) {
-    std::vector<BSONObj> splitKeys;
-
-    int elapsedMillisToFindSplitPoints;
-
-    // Contains each key appearing multiple times and estimated to be able to fill-in a chunk alone
-    auto tooFrequentKeys = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
-
+namespace mongo
+{
+    namespace
     {
-        AutoGetCollection collection(opCtx, nss, MODE_IS);
 
-        uassert(ErrorCodes::NamespaceNotFound,
-                str::stream() << "namespace " << nss << " does not exists",
-                collection);
+        constexpr int estimatedAdditionalBytesPerItemInBSONArray{2};
 
-        // Get the size estimate for this namespace
-        const long long totalLocalCollDocuments = collection->numRecords(opCtx);
-        const long long dataSize = collection->dataSize(opCtx);
+        constexpr int kMaxSplitPointsToReposition{3};
 
-        // Return empty vector if current estimated data size is less than max chunk size
-        if (dataSize < maxChunkSizeBytes || totalLocalCollDocuments == 0) {
-            return {};
+        BSONObj prettyKey(const BSONObj &keyPattern, const BSONObj &key)
+        {
+            return key.replaceFieldNames(keyPattern).clientReadable();
         }
 
-        // Allow multiKey based on the invariant that shard keys must be single-valued. Therefore,
-        // any multi-key index prefixed by shard key cannot be multikey over the shard key fields.
-        auto catalog = collection->getIndexCatalog();
-        auto shardKeyIdx =
-            catalog->findShardKeyPrefixedIndex(opCtx, keyPattern, /*requireSingleKey=*/false);
-        uassert(ErrorCodes::IndexNotFound,
-                str::stream() << "couldn't find index over splitting key "
-                              << keyPattern.clientReadable().toString(),
-                shardKeyIdx);
-
-        const auto [minKey, maxKey] = getMinMaxExtendedBounds(shardKeyIdx, min, max);
-
-        // Setup the index scanner that will be used to find the split points
-        auto forwardIdxScanner =
-            InternalPlanner::indexScan(opCtx,
-                                       &(*collection),
-                                       shardKeyIdx,
-                                       minKey,
-                                       maxKey,
-                                       BoundInclusion::kIncludeStartKeyOnly,
-                                       PlanYieldPolicy::YieldPolicy::YIELD_AUTO,
-                                       InternalPlanner::FORWARD);
-
-        // Get minimum key belonging to the chunk
-        BSONObj minKeyInOriginalChunk;
+        /*
+         * Takes the given min/max BSON objects that are a prefix of the shardKey and return two new BSON
+         * object extended to cover the entire shardKey. See KeyPattern::extendRangeBound documentation for
+         * some examples.
+         */
+        const std::tuple<BSONObj, BSONObj> getMinMaxExtendedBounds(const IndexDescriptor *shardKeyIdx,
+                                                                   const BSONObj &min,
+                                                                   const BSONObj &max)
         {
-            PlanExecutor::ExecState state =
-                forwardIdxScanner->getNext(&minKeyInOriginalChunk, nullptr);
-            if (state == PlanExecutor::IS_EOF) {
-                // Range is empty
+            KeyPattern kp(shardKeyIdx->keyPattern());
+
+            // Extend min to get (min, MinKey, MinKey, ....)
+            BSONObj minKey = Helpers::toKeyFormat(kp.extendRangeBound(min, false /* upperInclusive */));
+            BSONObj maxKey;
+            if (max.isEmpty())
+            {
+                // if max not specified, make it (MaxKey, Maxkey, MaxKey...)
+                maxKey = Helpers::toKeyFormat(kp.extendRangeBound(max, true /* upperInclusive */));
+            }
+            else
+            {
+                // otherwise make it (max,MinKey,MinKey...) so that bound is non-inclusive
+                maxKey = Helpers::toKeyFormat(kp.extendRangeBound(max, false /* upperInclusive*/));
+            }
+
+            return {minKey, maxKey};
+        }
+
+        /*
+         * Reshuffle fields according to the shard key pattern.
+         */
+        auto orderShardKeyFields(const BSONObj &keyPattern, BSONObj &key)
+        {
+            return dotted_path_support::extractElementsBasedOnTemplate(
+                prettyKey(keyPattern, key.getOwned()), keyPattern);
+        }
+
+    } // namespace
+
+    // ChunkSplitter::_runAutosplit
+    std::vector<BSONObj> autoSplitVector(OperationContext *opCtx,
+                                         const NamespaceString &nss,
+                                         const BSONObj &keyPattern,
+                                         const BSONObj &min,
+                                         const BSONObj &max,
+                                         long long maxChunkSizeBytes)
+    {
+        std::vector<BSONObj> splitKeys;
+		getOwned()
+
+
+
+        int elapsedMillisToFindSplitPoints;
+
+        // Contains each key appearing multiple times and estimated to be able to fill-in a chunk alone
+        auto tooFrequentKeys = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
+
+        {
+            AutoGetCollection collection(opCtx, nss, MODE_IS);
+
+            uassert(ErrorCodes::NamespaceNotFound,
+                    str::stream() << "namespace " << nss << " does not exists",
+                    collection);
+
+            // Get the size estimate for this namespace
+            const long long totalLocalCollDocuments = collection->numRecords(opCtx);
+            const long long dataSize = collection->dataSize(opCtx);
+
+            // Return empty vector if current estimated data size is less than max chunk size
+            if (dataSize < maxChunkSizeBytes || totalLocalCollDocuments == 0)
+            {
                 return {};
             }
-        }
 
-        BSONObj maxKeyInChunk;
-        {
-            auto backwardIdxScanner =
+            // Allow multiKey based on the invariant that shard keys must be single-valued. Therefore,
+            // any multi-key index prefixed by shard key cannot be multikey over the shard key fields.
+            auto catalog = collection->getIndexCatalog();
+			//找到shardkey对应的索引
+            auto shardKeyIdx =
+                catalog->findShardKeyPrefixedIndex(opCtx, keyPattern, /*requireSingleKey=*/false);
+            uassert(ErrorCodes::IndexNotFound,
+                    str::stream() << "couldn't find index over splitting key "
+                                  << keyPattern.clientReadable().toString(),
+                    shardKeyIdx);
+
+            const auto [minKey, maxKey] = getMinMaxExtendedBounds(shardKeyIdx, min, max);
+
+            // Setup the index scanner that will be used to find the split points
+            //查找[minKey, maxKey>中最小得一条真实数据，和最大得一条真实数据，如果为hash的话，这里是一个hash值
+            auto forwardIdxScanner =
                 InternalPlanner::indexScan(opCtx,
                                            &(*collection),
                                            shardKeyIdx,
-                                           maxKey,
                                            minKey,
-                                           BoundInclusion::kIncludeEndKeyOnly,
+                                           maxKey,
+                                           BoundInclusion::kIncludeStartKeyOnly,
                                            PlanYieldPolicy::YieldPolicy::YIELD_AUTO,
-                                           InternalPlanner::BACKWARD);
+                                           InternalPlanner::FORWARD);
 
-            PlanExecutor::ExecState state = backwardIdxScanner->getNext(&maxKeyInChunk, nullptr);
-            if (state == PlanExecutor::IS_EOF) {
-                // Range is empty
+            // Get minimum key belonging to the chunk
+            BSONObj minKeyInOriginalChunk;
+            {
+                PlanExecutor::ExecState state =
+                    forwardIdxScanner->getNext(&minKeyInOriginalChunk, nullptr);
+                if (state == PlanExecutor::IS_EOF)
+                {
+                    // Range is empty
+                    return {};
+                }
+            }
+
+            BSONObj maxKeyInChunk;
+            {
+                auto backwardIdxScanner =
+                    InternalPlanner::indexScan(opCtx,
+                                               &(*collection),
+                                               shardKeyIdx,
+                                               maxKey,
+                                               minKey,
+                                               BoundInclusion::kIncludeEndKeyOnly,
+                                               PlanYieldPolicy::YieldPolicy::YIELD_AUTO,
+                                               InternalPlanner::BACKWARD);
+
+                PlanExecutor::ExecState state = backwardIdxScanner->getNext(&maxKeyInChunk, nullptr);
+                if (state == PlanExecutor::IS_EOF)
+                {
+                    // Range is empty
+                    return {};
+                }
+            }
+
+			//{"t":{"$date":"2023-08-03T17:12:37.480+08:00"},"s":"W",  "c":"SHARDING", "id":586511111,"ctx":"ChunkSplitter-0","msg":"yang test .................autoSplitVector..","attr":{"keyPattern":"{ test: \"hashed\" }","min":"{ test: MinKey }","max":"{ test: -4611686018427387902 }","minKey":"{ : MinKey }","maxKey":"{ : -4611686018427387902 }","minKeyInOriginalChunk":"{ : -7384585843619517202 }","maxKeyInChunk":"{ : -7384585843619517202 }","shardKeyIdx":"{ v: 2, key: { test: \"hashed\" }, name: \"test_hashed\" }"}}
+			//要获取内容可以参考checkIfSingleDoc
+			LOGV2_WARNING(
+				586511111,
+				"yang test .................autoSplitVector..",
+				"keyPattern"_attr = keyPattern.getOwned().toString(),
+				"min"_attr = min.getOwned().toString(),
+				"max"_attr = max.getOwned().toString(),
+				"minKey"_attr = minKey.getOwned().toString(),
+				"maxKey"_attr = maxKey.getOwned().toString(),
+				"minKeyInOriginalChunk"_attr = minKeyInOriginalChunk.getOwned().toString(),
+				"maxKeyInChunk"_attr = maxKeyInChunk.getOwned().toString(),
+				"shardKeyIdx"_attr = shardKeyIdx->toString());
+
+            if (minKeyInOriginalChunk.woCompare(maxKeyInChunk) == 0)
+            {
+                // Range contains only documents with a single key value.  So we cannot possibly find a
+                // split point, and there is no need to scan any further.
+                LOGV2_WARNING(
+                    5865001,
+                    "Possible low cardinality key detected in range. Range contains only a single key.",
+                    "namespace"_attr = collection.getNss(),
+                    "minKey"_attr = redact(prettyKey(keyPattern, minKey)),
+                    "maxKey"_attr = redact(prettyKey(keyPattern, maxKey)),
+                    "key"_attr = redact(prettyKey(shardKeyIdx->keyPattern(), minKeyInOriginalChunk)));
                 return {};
             }
-        }
 
-        if (minKeyInOriginalChunk.woCompare(maxKeyInChunk) == 0) {
-            // Range contains only documents with a single key value.  So we cannot possibly find a
-            // split point, and there is no need to scan any further.
-            LOGV2_WARNING(
-                5865001,
-                "Possible low cardinality key detected in range. Range contains only a single key.",
-                "namespace"_attr = collection.getNss(),
-                "minKey"_attr = redact(prettyKey(keyPattern, minKey)),
-                "maxKey"_attr = redact(prettyKey(keyPattern, maxKey)),
-                "key"_attr = redact(prettyKey(shardKeyIdx->keyPattern(), minKeyInOriginalChunk)));
-            return {};
-        }
+            LOGV2(5865000,
+                  "Requested split points lookup for range",
+                  "namespace"_attr = nss,
+                  "minKey"_attr = redact(prettyKey(keyPattern, minKey)),
+                  "maxKey"_attr = redact(prettyKey(keyPattern, maxKey)));
 
-        LOGV2(5865000,
-              "Requested split points lookup for range",
-              "namespace"_attr = nss,
-              "minKey"_attr = redact(prettyKey(keyPattern, minKey)),
-              "maxKey"_attr = redact(prettyKey(keyPattern, maxKey)));
+            // Use the average document size and number of documents to find the approximate number of
+            // keys each chunk should contain
+            const long long avgDocSize = dataSize / totalLocalCollDocuments;
 
-        // Use the average document size and number of documents to find the approximate number of
-        // keys each chunk should contain
-        const long long avgDocSize = dataSize / totalLocalCollDocuments;
+            // Split at max chunk size
+            long long maxDocsPerChunk = maxChunkSizeBytes / avgDocSize;
 
-        // Split at max chunk size
-        long long maxDocsPerChunk = maxChunkSizeBytes / avgDocSize;
+            BSONObj currentKey;              // Last key seen during the index scan
+            long long numScannedKeys = 1;    // minKeyInOriginalChunk has already been scanned
+            std::size_t resultArraySize = 0; // Approximate size in bytes of the split points array
+            bool reachedMaxBSONSize = false; // True if the split points vector becomes too big
 
-        BSONObj currentKey;               // Last key seen during the index scan
-        long long numScannedKeys = 1;     // minKeyInOriginalChunk has already been scanned
-        std::size_t resultArraySize = 0;  // Approximate size in bytes of the split points array
-        bool reachedMaxBSONSize = false;  // True if the split points vector becomes too big
+            // Lambda to check whether the split points vector would exceed BSONObjMaxUserSize in case
+            // of additional split key of the specified size.
+            auto checkMaxBSONSize = [&resultArraySize](const int additionalKeySize)
+            {
+                return resultArraySize + additionalKeySize > BSONObjMaxUserSize;
+            };
 
-        // Lambda to check whether the split points vector would exceed BSONObjMaxUserSize in case
-        // of additional split key of the specified size.
-        auto checkMaxBSONSize = [&resultArraySize](const int additionalKeySize) {
-            return resultArraySize + additionalKeySize > BSONObjMaxUserSize;
-        };
+            // Reference to last split point that needs to be checked in order to avoid adding duplicate
+            // split points. Initialized to the min of the first chunk being split.
+            auto minKeyElement = orderShardKeyFields(keyPattern, minKeyInOriginalChunk);
+            auto lastSplitPoint = minKeyElement;
 
-        // Reference to last split point that needs to be checked in order to avoid adding duplicate
-        // split points. Initialized to the min of the first chunk being split.
-        auto minKeyElement = orderShardKeyFields(keyPattern, minKeyInOriginalChunk);
-        auto lastSplitPoint = minKeyElement;
+            Timer timer; // To measure time elapsed while searching split points
 
-        Timer timer;  // To measure time elapsed while searching split points
+            // Traverse the index and add the maxDocsPerChunk-th key to the result vector
+            while (forwardIdxScanner->getNext(&currentKey, nullptr) == PlanExecutor::ADVANCED)
+            {
+                if (++numScannedKeys >= maxDocsPerChunk)
+                {
+                    currentKey = orderShardKeyFields(keyPattern, currentKey);
 
-        // Traverse the index and add the maxDocsPerChunk-th key to the result vector
-        while (forwardIdxScanner->getNext(&currentKey, nullptr) == PlanExecutor::ADVANCED) {
-            if (++numScannedKeys >= maxDocsPerChunk) {
-                currentKey = orderShardKeyFields(keyPattern, currentKey);
-
-                if (currentKey.woCompare(lastSplitPoint) == 0) {
-                    // Do not add again the same split point in case of frequent shard key.
-                    tooFrequentKeys.insert(currentKey.getOwned());
-                    continue;
-                }
-
-                const auto additionalKeySize =
-                    currentKey.objsize() + estimatedAdditionalBytesPerItemInBSONArray;
-                if (checkMaxBSONSize(additionalKeySize)) {
-                    if (splitKeys.empty()) {
-                        // Keep trying until finding at least one split point that isn't above
-                        // the max object user size. Very improbable corner case: the shard key
-                        // size for the chosen split point is exactly 16MB.
+                    if (currentKey.woCompare(lastSplitPoint) == 0)
+                    {
+                        // Do not add again the same split point in case of frequent shard key.
+                        tooFrequentKeys.insert(currentKey.getOwned());
                         continue;
                     }
-                    reachedMaxBSONSize = true;
-                    break;
+
+                    const auto additionalKeySize =
+                        currentKey.objsize() + estimatedAdditionalBytesPerItemInBSONArray;
+                    if (checkMaxBSONSize(additionalKeySize))
+                    {
+                        if (splitKeys.empty())
+                        {
+                            // Keep trying until finding at least one split point that isn't above
+                            // the max object user size. Very improbable corner case: the shard key
+                            // size for the chosen split point is exactly 16MB.
+                            continue;
+                        }
+                        reachedMaxBSONSize = true;
+                        break;
+                    }
+
+                    resultArraySize += additionalKeySize;
+                    splitKeys.push_back(currentKey.getOwned());
+                    lastSplitPoint = splitKeys.back();
+                    numScannedKeys = 0;
+
+                    LOGV2_DEBUG(5865003, 4, "Picked a split key", "key"_attr = redact(currentKey));
                 }
-
-                resultArraySize += additionalKeySize;
-                splitKeys.push_back(currentKey.getOwned());
-                lastSplitPoint = splitKeys.back();
-                numScannedKeys = 0;
-
-                LOGV2_DEBUG(5865003, 4, "Picked a split key", "key"_attr = redact(currentKey));
             }
-        }
 
-        // Avoid creating small chunks by fairly recalculating the last split points if the last
-        // chunk would be too small (containing less than `80% maxDocsPerChunk` documents).
-        bool lastChunk80PercentFull = numScannedKeys >= maxDocsPerChunk * 0.8;
-        if (!lastChunk80PercentFull && !splitKeys.empty() && !reachedMaxBSONSize) {
-            // Eventually recalculate the last split points (at most `kMaxSplitPointsToReposition`).
-            int nSplitPointsToReposition = splitKeys.size() > kMaxSplitPointsToReposition
-                ? kMaxSplitPointsToReposition
-                : splitKeys.size();
+            // Avoid creating small chunks by fairly recalculating the last split points if the last
+            // chunk would be too small (containing less than `80% maxDocsPerChunk` documents).
+            bool lastChunk80PercentFull = numScannedKeys >= maxDocsPerChunk * 0.8;
+            if (!lastChunk80PercentFull && !splitKeys.empty() && !reachedMaxBSONSize)
+            {
+                // Eventually recalculate the last split points (at most `kMaxSplitPointsToReposition`).
+                int nSplitPointsToReposition = splitKeys.size() > kMaxSplitPointsToReposition
+                                                   ? kMaxSplitPointsToReposition
+                                                   : splitKeys.size();
 
-            // Equivalent to: (nSplitPointsToReposition * maxDocsPerChunk + numScannedKeys) divided
-            // by the number of reshuffled chunks (nSplitPointsToReposition + 1).
-            const auto maxDocsPerNewChunk = maxDocsPerChunk -
-                ((maxDocsPerChunk - numScannedKeys) / (nSplitPointsToReposition + 1));
+                // Equivalent to: (nSplitPointsToReposition * maxDocsPerChunk + numScannedKeys) divided
+                // by the number of reshuffled chunks (nSplitPointsToReposition + 1).
+                const auto maxDocsPerNewChunk = maxDocsPerChunk -
+                                                ((maxDocsPerChunk - numScannedKeys) / (nSplitPointsToReposition + 1));
 
-            if (numScannedKeys < maxDocsPerChunk - maxDocsPerNewChunk) {
-                // If the surplus is not too much, simply keep a bigger last chunk.
-                // The surplus is considered enough if repositioning the split points would imply
-                // generating chunks with a number of documents lower than `67% maxDocsPerChunk`.
-                splitKeys.pop_back();
-            } else {
-                // Fairly recalculate the last `nSplitPointsToReposition` split points.
-                splitKeys.erase(splitKeys.end() - nSplitPointsToReposition, splitKeys.end());
+                if (numScannedKeys < maxDocsPerChunk - maxDocsPerNewChunk)
+                {
+                    // If the surplus is not too much, simply keep a bigger last chunk.
+                    // The surplus is considered enough if repositioning the split points would imply
+                    // generating chunks with a number of documents lower than `67% maxDocsPerChunk`.
+                    splitKeys.pop_back();
+                }
+                else
+                {
+                    // Fairly recalculate the last `nSplitPointsToReposition` split points.
+                    splitKeys.erase(splitKeys.end() - nSplitPointsToReposition, splitKeys.end());
 
-                auto forwardIdxScanner =
-                    InternalPlanner::indexScan(opCtx,
-                                               &collection.getCollection(),
-                                               shardKeyIdx,
-                                               splitKeys.empty() ? minKeyElement : splitKeys.back(),
-                                               maxKey,
-                                               BoundInclusion::kIncludeStartKeyOnly,
-                                               PlanYieldPolicy::YieldPolicy::YIELD_AUTO,
-                                               InternalPlanner::FORWARD);
+                    auto forwardIdxScanner =
+                        InternalPlanner::indexScan(opCtx,
+                                                   &collection.getCollection(),
+                                                   shardKeyIdx,
+                                                   splitKeys.empty() ? minKeyElement : splitKeys.back(),
+                                                   maxKey,
+                                                   BoundInclusion::kIncludeStartKeyOnly,
+                                                   PlanYieldPolicy::YieldPolicy::YIELD_AUTO,
+                                                   InternalPlanner::FORWARD);
 
-                numScannedKeys = 0;
+                    numScannedKeys = 0;
 
-                auto previousSplitPoint = splitKeys.empty() ? minKeyElement : splitKeys.back();
-                while (forwardIdxScanner->getNext(&currentKey, nullptr) == PlanExecutor::ADVANCED) {
-                    if (++numScannedKeys >= maxDocsPerNewChunk) {
-                        currentKey = orderShardKeyFields(keyPattern, currentKey);
+                    auto previousSplitPoint = splitKeys.empty() ? minKeyElement : splitKeys.back();
+                    while (forwardIdxScanner->getNext(&currentKey, nullptr) == PlanExecutor::ADVANCED)
+                    {
+                        if (++numScannedKeys >= maxDocsPerNewChunk)
+                        {
+                            currentKey = orderShardKeyFields(keyPattern, currentKey);
 
-                        const auto compareWithPreviousSplitPoint =
-                            currentKey.woCompare(previousSplitPoint);
-                        if (compareWithPreviousSplitPoint > 0) {
-                            const auto additionalKeySize =
-                                currentKey.objsize() + estimatedAdditionalBytesPerItemInBSONArray;
-                            if (checkMaxBSONSize(additionalKeySize)) {
-                                reachedMaxBSONSize = true;
-                                break;
+                            const auto compareWithPreviousSplitPoint =
+                                currentKey.woCompare(previousSplitPoint);
+                            if (compareWithPreviousSplitPoint > 0)
+                            {
+                                const auto additionalKeySize =
+                                    currentKey.objsize() + estimatedAdditionalBytesPerItemInBSONArray;
+                                if (checkMaxBSONSize(additionalKeySize))
+                                {
+                                    reachedMaxBSONSize = true;
+                                    break;
+                                }
+
+                                splitKeys.push_back(currentKey.getOwned());
+                                previousSplitPoint = splitKeys.back();
+                                numScannedKeys = 0;
+
+                                if (--nSplitPointsToReposition == 0)
+                                {
+                                    break;
+                                }
                             }
-
-                            splitKeys.push_back(currentKey.getOwned());
-                            previousSplitPoint = splitKeys.back();
-                            numScannedKeys = 0;
-
-                            if (--nSplitPointsToReposition == 0) {
-                                break;
+                            else if (compareWithPreviousSplitPoint == 0)
+                            {
+                                // Don't add again the same split point in case of frequent shard key.
+                                tooFrequentKeys.insert(currentKey.getOwned());
                             }
-                        } else if (compareWithPreviousSplitPoint == 0) {
-                            // Don't add again the same split point in case of frequent shard key.
-                            tooFrequentKeys.insert(currentKey.getOwned());
                         }
                     }
                 }
             }
+
+            elapsedMillisToFindSplitPoints = timer.millis();
+
+            if (reachedMaxBSONSize)
+            {
+                LOGV2(5865002,
+                      "Max BSON response size reached for split vector before the end of chunk",
+                      "namespace"_attr = nss,
+                      "minKey"_attr = redact(prettyKey(shardKeyIdx->keyPattern(), minKey)),
+                      "maxKey"_attr = redact(prettyKey(shardKeyIdx->keyPattern(), maxKey)));
+            }
         }
 
-        elapsedMillisToFindSplitPoints = timer.millis();
-
-        if (reachedMaxBSONSize) {
-            LOGV2(5865002,
-                  "Max BSON response size reached for split vector before the end of chunk",
-                  "namespace"_attr = nss,
-                  "minKey"_attr = redact(prettyKey(shardKeyIdx->keyPattern(), minKey)),
-                  "maxKey"_attr = redact(prettyKey(shardKeyIdx->keyPattern(), maxKey)));
+        // Emit a warning for each frequent key
+        for (const auto &frequentKey : tooFrequentKeys)
+        {
+            LOGV2_WARNING(5865004,
+                          "Possible low cardinality key detected",
+                          "namespace"_attr = nss,
+                          "key"_attr = redact(prettyKey(keyPattern, frequentKey)));
         }
+
+        if (elapsedMillisToFindSplitPoints > serverGlobalParams.slowMS)
+        {
+            LOGV2_WARNING(5865005,
+                          "Finding the auto split vector completed",
+                          "namespace"_attr = nss,
+                          "keyPattern"_attr = redact(keyPattern),
+                          "numSplits"_attr = splitKeys.size(),
+                          "duration"_attr = Milliseconds(elapsedMillisToFindSplitPoints));
+        }
+
+        // TODO SERVER-58750: investigate if it is really needed to sort the vector
+        // Make sure splitKeys is in ascending order
+        std::sort(
+            splitKeys.begin(), splitKeys.end(), SimpleBSONObjComparator::kInstance.makeLessThan());
+
+        return splitKeys;
     }
 
-    // Emit a warning for each frequent key
-    for (const auto& frequentKey : tooFrequentKeys) {
-        LOGV2_WARNING(5865004,
-                      "Possible low cardinality key detected",
-                      "namespace"_attr = nss,
-                      "key"_attr = redact(prettyKey(keyPattern, frequentKey)));
-    }
-
-    if (elapsedMillisToFindSplitPoints > serverGlobalParams.slowMS) {
-        LOGV2_WARNING(5865005,
-                      "Finding the auto split vector completed",
-                      "namespace"_attr = nss,
-                      "keyPattern"_attr = redact(keyPattern),
-                      "numSplits"_attr = splitKeys.size(),
-                      "duration"_attr = Milliseconds(elapsedMillisToFindSplitPoints));
-    }
-
-    // TODO SERVER-58750: investigate if it is really needed to sort the vector
-    // Make sure splitKeys is in ascending order
-    std::sort(
-        splitKeys.begin(), splitKeys.end(), SimpleBSONObjComparator::kInstance.makeLessThan());
-
-    return splitKeys;
-}
-
-}  // namespace mongo
+} // namespace mongo

@@ -376,6 +376,7 @@ void Explain::planCacheEntryToBSON(const PlanCacheEntry& entry, BSONObjBuilder* 
     // Append whether or not the entry is active.
     out->append("isActive", entry.isActive);
     // we can use this counter to get the hot query sql
+    //getMatchingPlanCacheEntryStats->getMatchingStats中会_cacheMutex加锁，所以这里无需加锁
     out->append("counters", static_cast<long long>(entry.queryCounters));
     out->append("works", static_cast<long long>(entry.works));
     out->append("timeOfCreation", entry.timeOfCreation);

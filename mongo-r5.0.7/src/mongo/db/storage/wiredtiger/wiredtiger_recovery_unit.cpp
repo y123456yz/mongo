@@ -78,6 +78,7 @@ std::shared_ptr<StorageStats> WiredTigerOperationStats::getCopy() {
 }
 
 void WiredTigerOperationStats::fetchStats(WT_SESSION* session,
+			//statsPtr->fetchStats(s, "statistics:session", "statistics=(fast)");
                                           const std::string& uri,
                                           const std::string& config) {
     invariant(session);

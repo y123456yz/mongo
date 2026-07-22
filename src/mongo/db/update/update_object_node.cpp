@@ -9,20 +9,115 @@
 #include "mongo/db/update/modifier_table.h"
 #include "mongo/db/update/update_array_node.h"
 #include "mongo/db/update/update_leaf_node.h"
+#include "mongo/db/update/update_object_node_knobs_gen.h"
 #include "mongo/util/str.h"
+#include "mongo/util/string_map.h"
 
 #include <memory>
 #include <string_view>
+
+#include <boost/optional.hpp>
 
 namespace mongo {
 
 namespace {
 
 /**
- * Gets the child of 'element' named 'field', if it exists. Otherwise returns a non-ok element.
+ * A temporary, per-apply() index that resolves the update's target fields under a single object
+ * Element in one pass instead of a linear findFirstChildNamed() scan per field.
+ *
+ * Applying a modifier update resolves each target field via getChild() ->
+ * mutablebson::Element::findFirstChildNamed(), which is an O(n) scan of the object's child chain.
+ * When many fields under the same wide object are updated in one command, this becomes O(n^2). This
+ * cache scans the object's children once and records, for each target field, the corresponding
+ * child Element (or that it is absent), turning the per-field lookups into O(1).
+ *
+ * The index is "target-only": it is seeded from exactly the set of field names this update touches
+ * at this level, so its size is bounded by the number of updated fields, not by the document's fan
+ * out. The single-pass scan also stops as soon as every target has been located.
+ *
+ * Notes on correctness:
+ *  - Only field names that are update targets are indexed. A lookup for any other field name returns
+ *    boost::none so the caller falls back to the normal scan; this makes the cache safe to consult
+ *    unconditionally and robust to future call sites.
+ *  - The first Element seen for a given field name is recorded, preserving the "first match wins"
+ *    semantics of findFirstChildNamed() for (degenerate) documents with duplicate field names.
+ *  - A target that does not exist in the document is recorded as a non-ok Element, which is a
+ *    definitive "absent" answer (equivalent to what findFirstChildNamed() would return). Because the
+ *    scan only stops early once all targets are found, any target that exists is always located.
+ *  - Keys are owned std::strings, so the index does not depend on the stability of the document's
+ *    field-name storage as fields are created/removed during the update.
+ *  - Values are mutablebson::Element (a (Document*, RepIdx) pair). RepIdx values remain valid even
+ *    if the underlying element vector reallocates, and in-place value changes do not move elements,
+ *    so recorded entries stay valid across sibling updates.
+ *  - The cache is bound to the exact object Element it was built from; callers verify identity (see
+ *    getChild()) before consulting it.
  */
-mutablebson::Element getChild(mutablebson::Element element, std::string_view field) {
+class ChildLookupCache {
+public:
+    ChildLookupCache(mutablebson::Element parent, const std::vector<std::string_view>& targetFields)
+        : _parent(parent) {
+        invariant(parent.ok() && parent.getType() == BSONType::object);
+
+        // Seed the index with every target field, initially marked absent (a non-ok Element).
+        const auto absent = parent.getDocument().end();
+        _index.reserve(targetFields.size());
+        for (auto&& name : targetFields) {
+            _index.try_emplace(std::string{name}, absent);
+        }
+
+        // Single pass over the object's children, filling in the targets we find. Stop once every
+        // distinct target has been located so we do not scan the rest of a wide object needlessly.
+        size_t remaining = _index.size();
+        for (auto child = parent.leftChild(); child.ok() && remaining > 0;
+             child = child.rightSibling()) {
+            auto it = _index.find(child.getFieldName());
+            if (it != _index.end() && !it->second.ok()) {
+                it->second = child;
+                --remaining;
+            }
+        }
+    }
+
+    const mutablebson::Element& parent() const {
+        return _parent;
+    }
+
+    /**
+     * If 'field' is one of this update's target fields, returns the resolved child Element (a non-ok
+     * Element if the field is absent from the document). Otherwise returns boost::none to indicate
+     * the caller should fall back to a normal lookup.
+     */
+    boost::optional<mutablebson::Element> tryGetChild(std::string_view field) const {
+        if (auto it = _index.find(field); it != _index.end()) {
+            return it->second;
+        }
+        return boost::none;
+    }
+
+private:
+    mutablebson::Element _parent;
+    StringMap<mutablebson::Element> _index;
+};
+
+/**
+ * Gets the child of 'element' named 'field', if it exists. Otherwise returns a non-ok element.
+ *
+ * When 'childCache' is non-null and was built for exactly 'element', the cached target-field index
+ * is used to avoid the O(n) findFirstChildNamed() scan. The cache is only consulted for object
+ * elements (array children are addressed by numeric index, not field name) and only for the exact
+ * object it was built from; a field that was not indexed as a target falls back to the normal scan.
+ * This is safe even if the caller's current element has been advanced elsewhere.
+ */
+mutablebson::Element getChild(mutablebson::Element element,
+                              std::string_view field,
+                              const ChildLookupCache* childCache = nullptr) {
     if (element.getType() == BSONType::object) {
+        if (childCache && element == childCache->parent()) {
+            if (auto cached = childCache->tryGetChild(field)) {
+                return *cached;
+            }
+        }
         return element[field];
     } else if (element.getType() == BSONType::array) {
         auto indexFromField = str::parseUnsignedBase10Integer(field);
@@ -44,7 +139,8 @@ void applyChild(const UpdateNode& child,
                 std::string_view field,
                 UpdateExecutor::ApplyParams* applyParams,
                 UpdateNode::UpdateNodeApplyParams* updateNodeApplyParams,
-                UpdateExecutor::ApplyResult* applyResult) {
+                UpdateExecutor::ApplyResult* applyResult,
+                const ChildLookupCache* childCache = nullptr) {
 
     auto pathTakenSizeBefore = updateNodeApplyParams->pathTaken->fieldRef().numParts();
 
@@ -56,7 +152,11 @@ void applyChild(const UpdateNode& child,
         // We're already traversing a path with elements that don't exist yet, so we will definitely
         // need to append.
     } else {
-        childElement = getChild(applyParams->element, field);
+        // This is the field-location lookup that dominates wide-document multi-field updates; use
+        // the field-name index when available. The subsequent getChild() calls below only run when
+        // a child created new path components, so they intentionally bypass the cache (the newly
+        // created elements are not indexed).
+        childElement = getChild(applyParams->element, field, childCache);
     }
 
     if (childElement.ok()) {
@@ -386,6 +486,32 @@ UpdateExecutor::ApplyResult UpdateObjectNode::apply(
 
     auto applyResult = ApplyResult::noopResult();
 
+    // When many fields under the same wide object are updated in one command, resolving each target
+    // field with a linear findFirstChildNamed() scan is O(n^2). Build a one-time index over just
+    // this update's target fields so each lookup is O(1). This only pays off past a threshold, and
+    // only applies to object elements (array children are addressed by numeric index, not field
+    // name). The index is seeded from the fields this node actually touches (its children, plus the
+    // positional match), so its size is bounded by the update size rather than the document fan out.
+    boost::optional<ChildLookupCache> childCache;
+    // Read the runtime-tunable threshold once so a concurrent setParameter cannot change the
+    // decision partway through this apply(). A value of 0 disables the index; a very large value
+    // also effectively disables it.
+    const auto childLookupCacheThreshold = gUpdateObjectNodeChildLookupCacheThreshold.load();
+    if (childLookupCacheThreshold > 0 &&
+        _children.size() >= static_cast<size_t>(childLookupCacheThreshold) &&
+        applyParams.element.ok() && applyParams.element.getType() == BSONType::object) {
+        std::vector<std::string_view> targetFields;
+        targetFields.reserve(_children.size() + (applyPositional ? 1 : 0));
+        for (const auto& pair : _children) {
+            targetFields.push_back(pair.first);
+        }
+        if (applyPositional) {
+            targetFields.push_back(applyParams.matchedField);
+        }
+        childCache.emplace(applyParams.element, targetFields);
+    }
+    const ChildLookupCache* childCachePtr = childCache ? childCache.get_ptr() : nullptr;
+
     for (const auto& pair : _children) {
         // If this child has the same field name as the positional child, they must be merged and
         // applied.
@@ -418,7 +544,8 @@ UpdateExecutor::ApplyResult UpdateObjectNode::apply(
                        pair.first,
                        &applyParams,
                        &updateNodeApplyParams,
-                       &applyResult);
+                       &applyResult,
+                       childCachePtr);
 
             applyPositional = false;
             continue;
@@ -431,12 +558,18 @@ UpdateExecutor::ApplyResult UpdateObjectNode::apply(
                        applyParams.matchedField,
                        &applyParams,
                        &updateNodeApplyParams,
-                       &applyResult);
+                       &applyResult,
+                       childCachePtr);
             applyPositional = false;
         }
 
         // Apply the current child.
-        applyChild(*pair.second, pair.first, &applyParams, &updateNodeApplyParams, &applyResult);
+        applyChild(*pair.second,
+                   pair.first,
+                   &applyParams,
+                   &updateNodeApplyParams,
+                   &applyResult,
+                   childCachePtr);
     }
 
     // 'matchedField' is alphabetically after all children, so we apply it now.
@@ -445,7 +578,8 @@ UpdateExecutor::ApplyResult UpdateObjectNode::apply(
                    applyParams.matchedField,
                    &applyParams,
                    &updateNodeApplyParams,
-                   &applyResult);
+                   &applyResult,
+                   childCachePtr);
     }
 
     return applyResult;

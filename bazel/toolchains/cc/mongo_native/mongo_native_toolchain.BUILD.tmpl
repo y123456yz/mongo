@@ -115,6 +115,10 @@ mongo_linux_cc_toolchain_config(
     debug_level = DEBUG_LEVEL,
     disable_debug_symbols = DISABLE_DEBUG_SYMBOLS,
     linker = CHOSEN_LINKER,
+    # Local TencentOS build: native GCC auto-selects the supported "mold" linker,
+    # but this native toolchain template otherwise leaves mold_bin_dir empty,
+    # producing a bare '-B' link flag. Point it at a workspace-local ld.mold shim.
+    mold_bin_dir = "/data/yyz_mongodb_master/mongo/local_linker_bin/",
     linkstatic = LINKSTATIC_ENABLED,
     shared_archive = SHARED_ARCHIVE_ENABLED,
     builtin_sysroot = "",

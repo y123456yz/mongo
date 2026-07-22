@@ -67,6 +67,25 @@ protected:
         benchmarkUpdate(std::move(executor), inputDoc, state);
     }
 
+    void benchmarkSet(BSONObj inputDoc, BSONObj setSpec, benchmark::State& state) {
+        std::set<std::string> foundIdentifiers;
+        auto updateTree = std::make_unique<UpdateObjectNode>();
+        for (auto&& elem : setSpec["$set"].Obj()) {
+            tassert(11788502,
+                    "Failed to parse $set",
+                    UpdateObjectNode::parseAndMerge(updateTree.get(),
+                                                    modifiertable::ModifierType::MOD_SET,
+                                                    elem,
+                                                    _expCtx,
+                                                    kArrayFilters,
+                                                    foundIdentifiers)
+                        .isOK());
+        }
+
+        UpdateTreeExecutor executor(std::move(updateTree));
+        benchmarkUpdate(std::move(executor), inputDoc, state);
+    }
+
     ServiceContext::UniqueOperationContext _opCtx;
     boost::intrusive_ptr<ExpressionContext> _expCtx;
 
@@ -185,6 +204,82 @@ BENCHMARK_REGISTER_F(UpdateTreeExecutorBenchmark, AddToSetObjectWithStrings)
 
 BENCHMARK_REGISTER_F(UpdateTreeExecutorBenchmark, AddToSetObjectWithStringsCollator)
     ->Apply(configureAddToSetBenchmark);
+
+// Builds a flat object {field0: 0, field1: 1, ..., field(n-1): n-1}.
+BSONObj generateWideObject(int64_t numFields) {
+    BSONObjBuilder builder;
+    for (int64_t i = 0; i < numFields; ++i) {
+        builder.append("field" + std::to_string(i), i);
+    }
+    return builder.obj();
+}
+
+// Builds a {$set: {field0: 1, field1: 2, ..., field(n-1): n}} spec targeting every field.
+BSONObj generateWideSetSpec(int64_t numFields) {
+    BSONObjBuilder builder;
+    BSONObjBuilder inner(builder.subobjStart("$set"));
+    for (int64_t i = 0; i < numFields; ++i) {
+        inner.append("field" + std::to_string(i), i + 1);
+    }
+    inner.done();
+    return builder.obj();
+}
+
+// Builds a $set spec that updates 'numUpdated' fields chosen from a document with 'docFields' total
+// fields, picking indexes '0, step, 2*step, ...'. With step==1 the updated fields are clustered at
+// the front of the object; with a larger step they are spread across the whole object. This is the
+// workload that distinguishes a target-only index (bounded by 'numUpdated') from one that scans and
+// caches the whole object.
+BSONObj generatePartialSetSpec(int64_t docFields, int64_t numUpdated, int64_t step) {
+    BSONObjBuilder builder;
+    BSONObjBuilder inner(builder.subobjStart("$set"));
+    for (int64_t i = 0; i < numUpdated; ++i) {
+        int64_t index = (i * step) % docFields;
+        inner.append("field" + std::to_string(index), index + 1);
+    }
+    inner.done();
+    return builder.obj();
+}
+
+// Measures a $set that updates every field of a wide object. This is the workload the wide-object
+// child lookup cache targets: without it the repeated findFirstChildNamed() scans are O(n^2) in the
+// number of fields; with it they are O(n). The small field counts also guard against regressions on
+// narrow documents.
+BENCHMARK_DEFINE_F(UpdateTreeExecutorBenchmark, SetAllFieldsOnWideObject)(benchmark::State& state) {
+    int64_t numFields = state.range(0);
+    BSONObj inputDoc = generateWideObject(numFields);
+    BSONObj setSpec = generateWideSetSpec(numFields);
+    benchmarkSet(inputDoc, setSpec, state);
+}
+
+BENCHMARK_REGISTER_F(UpdateTreeExecutorBenchmark, SetAllFieldsOnWideObject)
+    ->Arg(10)
+    ->Arg(100)
+    ->Arg(1000)
+    ->Arg(5000);
+
+// Measures a $set that updates only a subset of the fields of a large (5000-field) object. This is
+// the case that motivates a target-only index: the index (and its setup work) should scale with the
+// number of updated fields, not the document's fan out. Arg(0) is the number of updated fields and
+// Arg(1) is the stride between updated field indexes (1 = clustered at the front, larger = spread
+// across the whole object).
+BENCHMARK_DEFINE_F(UpdateTreeExecutorBenchmark, SetPartialFieldsOnWideObject)
+(benchmark::State& state) {
+    static constexpr int64_t kDocFields = 5000;
+    int64_t numUpdated = state.range(0);
+    int64_t step = state.range(1);
+    BSONObj inputDoc = generateWideObject(kDocFields);
+    BSONObj setSpec = generatePartialSetSpec(kDocFields, numUpdated, step);
+    benchmarkSet(inputDoc, setSpec, state);
+}
+
+BENCHMARK_REGISTER_F(UpdateTreeExecutorBenchmark, SetPartialFieldsOnWideObject)
+    // Clustered at the front (small stride) and spread across the object (large stride), for a few
+    // update sizes around and above the cache threshold.
+    ->Args({10, 1})
+    ->Args({100, 1})
+    ->Args({100, 50})
+    ->Args({1000, 5});
 
 }  // namespace
 }  // namespace mongo

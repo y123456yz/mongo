@@ -1,0 +1,27 @@
+# Copyright (c) MongoDB, Inc.
+# SPDX-License-Identifier: SSPL-1.0
+
+global:
+    cpp_namespace: "mongo"
+
+imports:
+    - "mongo/db/basic_types.idl"
+
+server_parameters:
+    internalUpdateObjectNodeChildLookupCacheThreshold:
+        description: >-
+            The minimum number of fields updated under a single object node before
+            UpdateObjectNode::apply() builds a temporary field-name index over that object's
+            children to resolve the updated fields. Below this threshold updates keep the original
+            linear findFirstChildNamed() lookups (cheap for small updates); at or above it, the
+            index turns the repeated O(n) lookups into O(1), reducing wide-document multi-field
+            updates from O(n^2) to O(n). Can be changed at runtime. A value of 0 disables the index;
+            a very large value also effectively disables it. Only affects performance, not update
+            semantics.
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<int>"
+        cpp_varname: gUpdateObjectNodeChildLookupCacheThreshold
+        default: 0
+        validator:
+            gte: 0
+        redact: false

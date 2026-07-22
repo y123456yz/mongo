@@ -214,6 +214,11 @@ cc_library(
         "HAVE_CONFIG_H",
         "SHA1DC_FORCE_ALIGNED_ACCESS",
     ],
+    # rnp <-> rnp_librekey have a circular symbol dependency: rnp_librekey's
+    # key_store_g10.cpp references Cipher::decryption/Cipher::encryption defined
+    # in this library, while this library depends on rnp_librekey. Single-pass
+    # static linking can drop cipher.o before rnp_librekey needs it.
+    alwayslink = True,
     target_compatible_with = _RNP_PLATFORM,
     deps = [
         ":rnp_common",

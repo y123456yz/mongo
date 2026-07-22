@@ -12,6 +12,7 @@
 #include "mongo/db/update/rename_node.h"
 #include "mongo/db/update/update_array_node.h"
 #include "mongo/db/update/update_node_test_fixture.h"
+#include "mongo/db/update/update_object_node_knobs_gen.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 
@@ -2888,6 +2889,661 @@ TEST(SimpleParseArrayFilterIdentifierTest, ArrayFilterNotFound) {
     ASSERT_EQ(result.getStatus().reason(),
               "No array filter found for identifier 'validIdentifier' in path ''");
     ASSERT_TRUE(foundIdentifiers.empty());
+}
+
+//
+// Tests for the wide-object child lookup cache. When many fields under the same object are updated
+// in a single command, UpdateObjectNode::apply() builds a temporary field-name index over the
+// document object's children so each getChild() is O(1) instead of an O(n) findFirstChildNamed()
+// scan (turning the overall cost from O(n^2) to O(n)). These tests exercise field counts above the
+// internal cache threshold and verify correctness (values, structure, and duplicate-field
+// semantics) is identical to the non-cached path.
+//
+
+namespace {
+// Parses every field of 'setSpec' (a mapping of path -> value) into 'root' using modifier 'type'.
+void parseAllModifierFields(UpdateObjectNode* root,
+                            modifiertable::ModifierType type,
+                            const BSONObj& modSpec,
+                            const boost::intrusive_ptr<ExpressionContext>& expCtx) {
+    std::map<std::string_view, std::unique_ptr<ExpressionWithPlaceholder>> arrayFilters;
+    std::set<std::string> foundIdentifiers;
+    for (auto&& elem : modSpec) {
+        ASSERT_OK(UpdateObjectNode::parseAndMerge(
+            root, type, elem, expCtx, arrayFilters, foundIdentifiers));
+    }
+}
+
+class ScopedChildLookupCacheThreshold {
+public:
+    explicit ScopedChildLookupCacheThreshold(int threshold)
+        : _previous(gUpdateObjectNodeChildLookupCacheThreshold.load()) {
+        gUpdateObjectNodeChildLookupCacheThreshold.store(threshold);
+    }
+
+    ~ScopedChildLookupCacheThreshold() {
+        gUpdateObjectNodeChildLookupCacheThreshold.store(_previous);
+    }
+
+private:
+    int _previous;
+};
+}  // namespace
+
+TEST_F(UpdateObjectNodeTest, ApplyManySiblingFieldsAboveCacheThresholdUpdatesAllFields) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    // Well above the internal cache threshold, so the child lookup cache is exercised.
+    static constexpr int kNumFields = 200;
+
+    BSONObjBuilder setBob;
+    {
+        BSONObjBuilder inner(setBob.subobjStart("$set"));
+        for (int i = 0; i < kNumFields; ++i) {
+            inner.append("field" + std::to_string(i), i + 1000);
+        }
+    }
+    auto setUpdate = setBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_SET, setUpdate["$set"].Obj(), expCtx);
+
+    BSONObjBuilder docBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        docBob.append("field" + std::to_string(i), 0);
+    }
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    // In-place updates preserve field order, so we can build the expected document directly.
+    BSONObjBuilder expectedBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        expectedBob.append("field" + std::to_string(i), i + 1000);
+    }
+    ASSERT_BSONOBJ_EQ(expectedBob.obj(), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyManySiblingFieldsAboveCacheThresholdIsNoopWhenValuesMatch) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    static constexpr int kNumFields = 120;
+
+    BSONObjBuilder setBob;
+    {
+        BSONObjBuilder inner(setBob.subobjStart("$set"));
+        for (int i = 0; i < kNumFields; ++i) {
+            inner.append("field" + std::to_string(i), i);
+        }
+    }
+    auto setUpdate = setBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_SET, setUpdate["$set"].Obj(), expCtx);
+
+    // Document already holds the target values, so applying is a noop.
+    BSONObjBuilder docBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        docBob.append("field" + std::to_string(i), i);
+    }
+    auto original = docBob.obj();
+    mutablebson::Document doc(original);
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_TRUE(result.noop);
+    ASSERT_BSONOBJ_EQ(original, doc.getObject());
+    assertOplogEntryIsNoop();
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyManySiblingFieldsAboveCacheThresholdMixedUpdateAndCreate) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    // 100 existing fields updated plus 10 new fields created; total targets exceed the threshold.
+    static constexpr int kNumExisting = 100;
+    static constexpr int kNumNew = 10;
+
+    BSONObjBuilder setBob;
+    {
+        BSONObjBuilder inner(setBob.subobjStart("$set"));
+        for (int i = 0; i < kNumExisting; ++i) {
+            inner.append("field" + std::to_string(i), i + 1000);
+        }
+        // 'znew*' sorts after all 'field*', so created fields are appended after the existing ones.
+        for (int i = 0; i < kNumNew; ++i) {
+            inner.append("znew" + std::to_string(i), i + 5000);
+        }
+    }
+    auto setUpdate = setBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_SET, setUpdate["$set"].Obj(), expCtx);
+
+    BSONObjBuilder docBob;
+    for (int i = 0; i < kNumExisting; ++i) {
+        docBob.append("field" + std::to_string(i), 0);
+    }
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    BSONObjBuilder expectedBob;
+    for (int i = 0; i < kNumExisting; ++i) {
+        expectedBob.append("field" + std::to_string(i), i + 1000);
+    }
+    for (int i = 0; i < kNumNew; ++i) {
+        expectedBob.append("znew" + std::to_string(i), i + 5000);
+    }
+    ASSERT_BSONOBJ_EQ(expectedBob.obj(), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyManyUnsetFieldsAboveCacheThreshold) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    // $unset is a structural modifier (it removes elements). Verify the cache stays correct when
+    // many sibling fields are removed under the same wide object.
+    static constexpr int kNumFields = 100;
+
+    BSONObjBuilder unsetBob;
+    {
+        BSONObjBuilder inner(unsetBob.subobjStart("$unset"));
+        for (int i = 0; i < kNumFields; ++i) {
+            inner.append("field" + std::to_string(i), "");
+        }
+    }
+    auto unsetUpdate = unsetBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(
+        &root, modifiertable::ModifierType::MOD_UNSET, unsetUpdate["$unset"].Obj(), expCtx);
+
+    BSONObjBuilder docBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        docBob.append("field" + std::to_string(i), i);
+    }
+    docBob.append("keepMe", 42);
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+    ASSERT_BSONOBJ_EQ(fromjson("{keepMe: 42}"), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyManyNestedSiblingFieldsAboveCacheThreshold) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    // The wide object is nested under "a". The root has a single child (below threshold), but the
+    // nested UpdateObjectNode for "a" builds its own cache for a's children.
+    static constexpr int kNumFields = 100;
+
+    BSONObjBuilder setBob;
+    {
+        BSONObjBuilder inner(setBob.subobjStart("$set"));
+        for (int i = 0; i < kNumFields; ++i) {
+            inner.append("a.field" + std::to_string(i), i + 1000);
+        }
+    }
+    auto setUpdate = setBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_SET, setUpdate["$set"].Obj(), expCtx);
+
+    BSONObjBuilder subBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        subBob.append("field" + std::to_string(i), 0);
+    }
+    mutablebson::Document doc(BSON("a" << subBob.obj()));
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    BSONObjBuilder expectedSubBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        expectedSubBob.append("field" + std::to_string(i), i + 1000);
+    }
+    ASSERT_BSONOBJ_EQ(BSON("a" << expectedSubBob.obj()), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyManySiblingFieldsAboveCacheThresholdPreservesDuplicateFieldSemantics) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    // A document with a duplicate field name: findFirstChildNamed() (and therefore the cache) must
+    // resolve to the FIRST occurrence. Enough distinct update targets are included to exceed the
+    // cache threshold.
+    static constexpr int kNumPadding = 60;
+
+    BSONObjBuilder setBob;
+    {
+        BSONObjBuilder inner(setBob.subobjStart("$set"));
+        inner.append("dup", 9);
+        for (int i = 0; i < kNumPadding; ++i) {
+            inner.append("field" + std::to_string(i), i + 1000);
+        }
+    }
+    auto setUpdate = setBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_SET, setUpdate["$set"].Obj(), expCtx);
+
+    // Build a document with two "dup" fields (first=1, second=2) followed by the padding fields.
+    BSONObjBuilder docBob;
+    docBob.append("dup", 1);
+    docBob.append("dup", 2);
+    for (int i = 0; i < kNumPadding; ++i) {
+        docBob.append("field" + std::to_string(i), 0);
+    }
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    // Only the first "dup" is updated (to 9); the second "dup" is untouched (stays 2).
+    BSONObjBuilder expectedBob;
+    expectedBob.append("dup", 9);
+    expectedBob.append("dup", 2);
+    for (int i = 0; i < kNumPadding; ++i) {
+        expectedBob.append("field" + std::to_string(i), i + 1000);
+    }
+    ASSERT_BSONOBJ_EQ(expectedBob.obj(), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyManyIncFieldsAboveCacheThreshold) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    static constexpr int kNumFields = 100;
+
+    BSONObjBuilder incBob;
+    {
+        BSONObjBuilder inner(incBob.subobjStart("$inc"));
+        for (int i = 0; i < kNumFields; ++i) {
+            inner.append("field" + std::to_string(i), 1);
+        }
+    }
+    auto incUpdate = incBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_INC, incUpdate["$inc"].Obj(), expCtx);
+
+    BSONObjBuilder docBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        docBob.append("field" + std::to_string(i), i);
+    }
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    BSONObjBuilder expectedBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        expectedBob.append("field" + std::to_string(i), i + 1);
+    }
+    ASSERT_BSONOBJ_EQ(expectedBob.obj(), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyManyMulFieldsAboveCacheThreshold) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    static constexpr int kNumFields = 100;
+
+    BSONObjBuilder mulBob;
+    {
+        BSONObjBuilder inner(mulBob.subobjStart("$mul"));
+        for (int i = 0; i < kNumFields; ++i) {
+            inner.append("field" + std::to_string(i), 2);
+        }
+    }
+    auto mulUpdate = mulBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_MUL, mulUpdate["$mul"].Obj(), expCtx);
+
+    BSONObjBuilder docBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        docBob.append("field" + std::to_string(i), i);
+    }
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    BSONObjBuilder expectedBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        expectedBob.append("field" + std::to_string(i), i * 2);
+    }
+    ASSERT_BSONOBJ_EQ(expectedBob.obj(), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyManyMinMaxFieldsAboveCacheThreshold) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    static constexpr int kNumFields = 100;
+
+    // $min lowers each field to 50 (only fields currently > 50 change); $max raises a disjoint set
+    // to 50 (only fields currently < 50 change). Using disjoint field sets keeps them independent.
+    BSONObjBuilder minBob;
+    {
+        BSONObjBuilder inner(minBob.subobjStart("$min"));
+        for (int i = 0; i < kNumFields; ++i) {
+            inner.append("lo" + std::to_string(i), 50);
+        }
+    }
+    auto minUpdate = minBob.obj();
+    BSONObjBuilder maxBob;
+    {
+        BSONObjBuilder inner(maxBob.subobjStart("$max"));
+        for (int i = 0; i < kNumFields; ++i) {
+            inner.append("hi" + std::to_string(i), 50);
+        }
+    }
+    auto maxUpdate = maxBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_MIN, minUpdate["$min"].Obj(), expCtx);
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_MAX, maxUpdate["$max"].Obj(), expCtx);
+
+    // 'lo*' fields start at 100 (will be lowered to 50); 'hi*' fields start at 0 (raised to 50).
+    BSONObjBuilder docBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        docBob.append("lo" + std::to_string(i), 100);
+    }
+    for (int i = 0; i < kNumFields; ++i) {
+        docBob.append("hi" + std::to_string(i), 0);
+    }
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    BSONObjBuilder expectedBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        expectedBob.append("lo" + std::to_string(i), 50);
+    }
+    for (int i = 0; i < kNumFields; ++i) {
+        expectedBob.append("hi" + std::to_string(i), 50);
+    }
+    ASSERT_BSONOBJ_EQ(expectedBob.obj(), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyManyCurrentDateFieldsAboveCacheThreshold) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    static constexpr int kNumFields = 100;
+
+    BSONObjBuilder cdBob;
+    {
+        BSONObjBuilder inner(cdBob.subobjStart("$currentDate"));
+        for (int i = 0; i < kNumFields; ++i) {
+            inner.append("field" + std::to_string(i), true);
+        }
+    }
+    auto cdUpdate = cdBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(
+        &root, modifiertable::ModifierType::MOD_CURRENTDATE, cdUpdate["$currentDate"].Obj(), expCtx);
+
+    BSONObjBuilder docBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        docBob.append("field" + std::to_string(i), 0);
+    }
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    // Every field should now hold a Date value.
+    auto updated = doc.getObject();
+    int seen = 0;
+    for (auto&& elem : updated) {
+        ASSERT_EQUALS(elem.type(), BSONType::date) << "field " << elem.fieldNameStringData();
+        ++seen;
+    }
+    ASSERT_EQUALS(seen, kNumFields);
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyTargetOnlyCacheUpdatesSubsetOfWideDocument) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    // The document is far wider than the set of updated fields. The target-only index must resolve
+    // exactly the updated fields (both existing and not-yet-existing) without disturbing the rest.
+    static constexpr int kDocFields = 500;
+    static constexpr int kNumUpdated = 60;  // above threshold
+
+    // Update every 5th existing field, plus 10 brand new fields that do not exist in the document.
+    BSONObjBuilder setBob;
+    {
+        BSONObjBuilder inner(setBob.subobjStart("$set"));
+        for (int i = 0; i < kNumUpdated - 10; ++i) {
+            inner.append("field" + std::to_string(i * 5), 900000 + i);
+        }
+        for (int i = 0; i < 10; ++i) {
+            inner.append("znew" + std::to_string(i), 700000 + i);
+        }
+    }
+    auto setUpdate = setBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_SET, setUpdate["$set"].Obj(), expCtx);
+
+    BSONObjBuilder docBob;
+    for (int i = 0; i < kDocFields; ++i) {
+        docBob.append("field" + std::to_string(i), i);
+    }
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    // Existing fields: those at multiples of 5 (below the updated range) get the new value; all
+    // others keep their original value. New 'znew*' fields are appended in sorted order at the end.
+    BSONObjBuilder expectedBob;
+    for (int i = 0; i < kDocFields; ++i) {
+        if (i % 5 == 0 && (i / 5) < (kNumUpdated - 10)) {
+            expectedBob.append("field" + std::to_string(i), 900000 + i / 5);
+        } else {
+            expectedBob.append("field" + std::to_string(i), i);
+        }
+    }
+    for (int i = 0; i < 10; ++i) {
+        expectedBob.append("znew" + std::to_string(i), 700000 + i);
+    }
+    ASSERT_BSONOBJ_EQ(expectedBob.obj(), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyTargetOnlyCacheAllTargetsMissingCreatesFields) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    // All updated fields are missing from a wide document. The target-only index resolves them all
+    // as absent (so they are created) without corrupting the existing fields.
+    static constexpr int kDocFields = 300;
+    static constexpr int kNumNew = 60;  // above threshold
+
+    BSONObjBuilder setBob;
+    {
+        BSONObjBuilder inner(setBob.subobjStart("$set"));
+        for (int i = 0; i < kNumNew; ++i) {
+            inner.append("znew" + std::to_string(i), 1000 + i);
+        }
+    }
+    auto setUpdate = setBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(&root, modifiertable::ModifierType::MOD_SET, setUpdate["$set"].Obj(), expCtx);
+
+    BSONObjBuilder docBob;
+    for (int i = 0; i < kDocFields; ++i) {
+        docBob.append("field" + std::to_string(i), i);
+    }
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    BSONObjBuilder expectedBob;
+    for (int i = 0; i < kDocFields; ++i) {
+        expectedBob.append("field" + std::to_string(i), i);
+    }
+    // Newly created fields are appended in the update tree's child order (UpdateObjectNode::_children
+    // is a std::map keyed by field name), i.e. field names are ordered as strings: znew0, znew1,
+    // znew10, ..., znew19, znew2, ..., not in numeric order. Build the expectation the same way so it
+    // reflects the engine's deterministic child ordering rather than the loop's numeric order.
+    std::map<std::string, int> newFields;
+    for (int i = 0; i < kNumNew; ++i) {
+        newFields.emplace("znew" + std::to_string(i), 1000 + i);
+    }
+    for (const auto& [name, value] : newFields) {
+        expectedBob.append(name, value);
+    }
+    ASSERT_BSONOBJ_EQ(expectedBob.obj(), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplySiblingFieldsAroundChildLookupCacheThreshold) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    // 49 is below the cache threshold; 50 and 51 are at/above it. All three cases must produce the
+    // same result, so the cache switch does not change update semantics at the boundary.
+    for (int numFields : {49, 50, 51}) {
+        resetApplyParams();
+
+        BSONObjBuilder setBob;
+        {
+            BSONObjBuilder inner(setBob.subobjStart("$set"));
+            for (int i = 0; i < numFields; ++i) {
+                inner.append("field" + std::to_string(i), i + 1000);
+            }
+        }
+        auto setUpdate = setBob.obj();
+
+        boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+        UpdateObjectNode root;
+        parseAllModifierFields(
+            &root, modifiertable::ModifierType::MOD_SET, setUpdate["$set"].Obj(), expCtx);
+
+        BSONObjBuilder docBob;
+        for (int i = 0; i < numFields; ++i) {
+            docBob.append("field" + std::to_string(i), i);
+        }
+        mutablebson::Document doc(docBob.obj());
+
+        auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+        ASSERT_FALSE(result.noop);
+
+        BSONObjBuilder expectedBob;
+        for (int i = 0; i < numFields; ++i) {
+            expectedBob.append("field" + std::to_string(i), i + 1000);
+        }
+        ASSERT_BSONOBJ_EQ(expectedBob.obj(), doc.getObject());
+    }
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyManyRenameFieldsAboveCacheThreshold) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    // Destination fields sort before source fields here. This means RenameNode children are applied
+    // before the source ConflictPlaceholderNode children, exercising cached target Elements across
+    // structural source removals.
+    static constexpr int kNumFields = 60;
+
+    auto twoDigit = [](int i) { return (i < 10 ? "0" : "") + std::to_string(i); };
+
+    BSONObjBuilder renameBob;
+    {
+        BSONObjBuilder inner(renameBob.subobjStart("$rename"));
+        for (int i = 0; i < kNumFields; ++i) {
+            auto suffix = twoDigit(i);
+            inner.append("zfield" + suffix, "afield" + suffix);
+        }
+    }
+    auto renameUpdate = renameBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    UpdateObjectNode root;
+    parseAllModifierFields(
+        &root, modifiertable::ModifierType::MOD_RENAME, renameUpdate["$rename"].Obj(), expCtx);
+
+    BSONObjBuilder docBob;
+    docBob.append("keep", -1);
+    for (int i = 0; i < kNumFields; ++i) {
+        docBob.append("zfield" + twoDigit(i), i);
+    }
+    mutablebson::Document doc(docBob.obj());
+
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    BSONObjBuilder expectedBob;
+    expectedBob.append("keep", -1);
+    for (int i = 0; i < kNumFields; ++i) {
+        expectedBob.append("afield" + twoDigit(i), i);
+    }
+    ASSERT_BSONOBJ_EQ(expectedBob.obj(), doc.getObject());
+}
+
+TEST_F(UpdateObjectNodeTest, ApplyPositionalChildAboveCacheThresholdOnObjectParent) {
+    ScopedChildLookupCacheThreshold cacheThreshold(50);
+    // The nested node under 'a' has enough non-positional children to build the cache, and the
+    // positional child is resolved through applyParams.matchedField (which is added to the
+    // target-only index). Use an object parent so the object child lookup cache is actually
+    // eligible (array parents intentionally skip it).
+    //
+    // Field ordering is made fully predictable so the expected document can be built directly:
+    //   - Existing fields are named "field00".."field49" (leading-zero => compared as plain strings
+    //     in lexicographic order under cmpPathsAndArrayIndexes). They are updated in place, so their
+    //     relative order in the document is preserved.
+    //   - The positional match resolves to field name "9", which does not exist in the document yet.
+    //     Creating it appends the new field to the end of the object's child chain (createPathAt
+    //     uses Element::pushBack), so "9" lands last regardless of its key-ordering.
+    static constexpr int kNumFields = 50;
+
+    auto twoDigit = [](int i) { return (i < 10 ? "0" : "") + std::to_string(i); };
+
+    BSONObjBuilder setBob;
+    {
+        BSONObjBuilder inner(setBob.subobjStart("$set"));
+        inner.append("a.$", 9999);
+        for (int i = 0; i < kNumFields; ++i) {
+            inner.append("a.field" + twoDigit(i), i + 1000);
+        }
+    }
+    auto setUpdate = setBob.obj();
+
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    std::map<std::string_view, std::unique_ptr<ExpressionWithPlaceholder>> arrayFilters;
+    std::set<std::string> foundIdentifiers;
+    UpdateObjectNode root;
+    ASSERT_OK(UpdateObjectNode::parseAndMerge(&root,
+                                              modifiertable::ModifierType::MOD_SET,
+                                              setUpdate["$set"]["a.$"],
+                                              expCtx,
+                                              arrayFilters,
+                                              foundIdentifiers));
+    for (int i = 0; i < kNumFields; ++i) {
+        ASSERT_OK(UpdateObjectNode::parseAndMerge(&root,
+                                                  modifiertable::ModifierType::MOD_SET,
+                                                  setUpdate["$set"]["a.field" + twoDigit(i)],
+                                                  expCtx,
+                                                  arrayFilters,
+                                                  foundIdentifiers));
+    }
+
+    // The document does not yet contain the positional target "9"; the positional $set creates it.
+    BSONObjBuilder subDocBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        subDocBob.append("field" + twoDigit(i), i);
+    }
+    mutablebson::Document doc(BSON("a" << subDocBob.obj()));
+
+    setMatchedField("9");
+    auto result = root.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
+    ASSERT_FALSE(result.noop);
+
+    // Existing fields are updated in place (order preserved); the newly created "9" is appended to
+    // the end of the object.
+    BSONObjBuilder expectedSubDocBob;
+    for (int i = 0; i < kNumFields; ++i) {
+        expectedSubDocBob.append("field" + twoDigit(i), i + 1000);
+    }
+    expectedSubDocBob.append("9", 9999);
+    ASSERT_BSONOBJ_EQ(BSON("a" << expectedSubDocBob.obj()), doc.getObject());
 }
 
 }  // namespace

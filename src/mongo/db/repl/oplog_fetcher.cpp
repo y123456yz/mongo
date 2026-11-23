@@ -436,6 +436,13 @@ void OplogFetcher::_runQuery(const executor::TaskExecutor::CallbackArgs& callbac
         // This will advance our view of _lastFetched.
         status = _onSuccessfulBatch(batchResult.getValue());
         if (!status.isOK()) {
+            if (_cursor->connectionHasPendingReplies()) {
+                // The sync source keeps pushing replies on this exhaust stream. Nothing will read
+                // them once this fetcher completes, so close the connection now instead of when the
+                // completed fetcher is eventually destroyed.
+                _conn->shutdown();
+            }
+
             // The stopReplProducer fail point expects this to return successfully. If another fail
             // point wants this to return unsuccessfully, it should use a different error code.
             if (status == ErrorCodes::FailPointEnabled) {
@@ -686,7 +693,8 @@ StatusWith<OplogFetcher::Documents> OplogFetcher::_getNextBatch() {
         // metric intentionally tracks the time taken by the initial find as well.
         _lastBatchElapsedMS = timer.millis();
     } catch (const DBException& ex) {
-        if (_cursor->connectionHasPendingReplies()) {
+        // '_cursor' is null if recreating it failed before the new cursor was assigned.
+        if (_cursor && _cursor->connectionHasPendingReplies()) {
             // Close the connection because the connection cannot be used anymore as more data is on
             // the way from the server for the exhaust stream. Thus, we have to reconnect. The
             // DBClientConnection does autoreconnect on the next network operation.
@@ -841,6 +849,7 @@ Status OplogFetcher::_onSuccessfulBatch(const Documents& documents) {
         return validateResult.getStatus();
     }
     auto info = validateResult.getValue();
+
     // If the batch is empty, set 'lastDocOpTime' to the lastFetched from the previous batch.
     auto lastDocOpTime = info.lastDocument.isNull() ? previousOpTimeFetched : info.lastDocument;
     oplogFetcherHighestFetchedOptime = lastDocOpTime.toBSON();
@@ -884,6 +893,27 @@ Status OplogFetcher::_onSuccessfulBatch(const Documents& documents) {
         return Status(ErrorCodes::InvalidSyncSource, getErrMsg());
     }
 
+    // Reject malformed resume tokens before processing replication metadata or enqueueing the
+    // batch. The caller is noexcept, so token parsing errors must be returned as a Status rather
+    // than thrown. If the sync source was already found to be invalid, keep reporting that so the
+    // sync source is still changed; the batch is dropped because its token cannot be trusted.
+    try {
+        if (auto token = _cursor->getPostBatchResumeToken()) {
+            info.resumeToken = ResumeTokenOplogTimestamp::parse(
+                                   *token, IDLParserContext("OplogFetcher PostBatchResumeToken"))
+                                   .getTs();
+        }
+    } catch (const DBException& e) {
+        auto status =
+            e.toStatus().withContext("Invalid postBatchResumeToken in oplog fetcher response");
+        if (changeSyncSourceAction != ChangeSyncSourceAction::kContinueSyncing) {
+            std::string syncSourceErrMsg = getErrMsg();
+            return Status(ErrorCodes::InvalidSyncSource,
+                          syncSourceErrMsg + "; " + status.toString());
+        }
+        return status;
+    }
+
     _dataReplicatorExternalState->processMetadata(replSetMetadata, oqMetadata);
 
     // Increment stats. We read all of the docs in the query.
@@ -891,13 +921,6 @@ Status OplogFetcher::_onSuccessfulBatch(const Documents& documents) {
     recordOplogBytesReceived(static_cast<int64_t>(info.networkDocumentBytes));
 
     oplogBatchStats.recordMillis(_lastBatchElapsedMS, documents.empty());
-
-    if (_cursor->getPostBatchResumeToken()) {
-        auto pbrt =
-            ResumeTokenOplogTimestamp::parse(*_cursor->getPostBatchResumeToken(),
-                                             IDLParserContext("OplogFetcher PostBatchResumeToken"));
-        info.resumeToken = pbrt.getTs();
-    }
 
     try {
         auto status = _enqueueDocumentsFn(firstDocToApply, documents.cend(), info);

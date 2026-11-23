@@ -51,6 +51,7 @@
 #include "mongo/util/uuid.h"
 
 #include <memory>
+#include <string>
 #include <string_view>
 
 #include <boost/move/utility_core.hpp>
@@ -149,6 +150,35 @@ Message makeSubsequentBatch(CursorId cursorId,
                             bool moreToCome) {
     return MockDBClientConnection::mockGetMoreResponse(
         NamespaceString::kRsOplogNamespace, cursorId, oplogEntries, metadata, moreToCome);
+}
+
+Message makeBatchWithResumeToken(CursorResponse::ResponseType responseType,
+                                 CursorId cursorId,
+                                 const OplogFetcher::Documents& oplogEntries,
+                                 const BSONObj& metadata,
+                                 const BSONObj& resumeToken,
+                                 bool moreToCome = false) {
+    BSONObjBuilder response;
+    response.append("ok", 1);
+    BSONObjBuilder cursor(response.subobjStart("cursor"));
+    cursor.append("id", cursorId);
+    cursor.append("ns", "local.oplog.rs");
+    BSONArrayBuilder batch(cursor.subarrayStart(
+        responseType == CursorResponse::ResponseType::InitialResponse ? "firstBatch"
+                                                                      : "nextBatch"));
+    for (const auto& entry : oplogEntries) {
+        batch.append(entry);
+    }
+    batch.doneFast();
+    // CursorResponse serialization omits empty tokens; preserve them to exercise malformed input.
+    cursor.append("postBatchResumeToken", resumeToken);
+    cursor.doneFast();
+    response.appendElementsUnique(metadata);
+    auto message = OpMsg{response.obj()}.serialize();
+    if (moreToCome) {
+        OpMsg::setFlag(&message, OpMsg::kMoreToCome);
+    }
+    return message;
 }
 
 bool blockedOnNetworkSoon(MockDBClientConnection* conn) {
@@ -2681,6 +2711,361 @@ TEST_F(OplogFetcherTest, CheckFindCommandIncludesRequestResumeTokenWhenRequested
 
     oplogFetcher->shutdown();
     oplogFetcher->join();
+}
+
+class OplogFetcherResumeTokenTest : public OplogFetcherTest {
+protected:
+    void assertInvalidFirstBatchToken(const BSONObj& token, ErrorCodes::Error expectedError) {
+        for (bool requestResumeToken : {false, true}) {
+            int enqueueCalls = 0;
+            enqueueDocumentsFn = [&](OplogFetcher::Documents::const_iterator,
+                                     OplogFetcher::Documents::const_iterator,
+                                     const OplogFetcher::DocumentsInfo&) {
+                ++enqueueCalls;
+                return Status::OK();
+            };
+            ShutdownState shutdownState;
+            auto fetcher =
+                getOplogFetcherAfterConnectionCreated(std::ref(shutdownState),
+                                                      0,
+                                                      true,
+                                                      OplogFetcher::StartingPoint::kSkipFirstDoc,
+                                                      BSONObj(),
+                                                      ReadConcernArgs(),
+                                                      requestResumeToken);
+            const auto firstEntry = makeNoopOplogEntry(lastFetched);
+            const auto secondEntry = makeNoopOplogEntry({{Seconds(456), 0}, lastFetched.getTerm()});
+            const auto metadata = makeOplogBatchMetadata(replSetMetadata, oqMetadata);
+            const auto response =
+                makeBatchWithResumeToken(CursorResponse::ResponseType::InitialResponse,
+                                         0LL,
+                                         {firstEntry, secondEntry},
+                                         metadata,
+                                         token);
+            ASSERT_BSONOBJ_EQ(
+                OpMsg::parse(response).body["cursor"].Obj()["postBatchResumeToken"].Obj(), token);
+            processSingleRequestResponse(fetcher->getDBClientConnection_forTest(), response);
+            fetcher->join();
+            ASSERT_EQ(shutdownState.getStatus().code(), expectedError);
+            ASSERT_NE(shutdownState.getStatus().reason().find("Invalid postBatchResumeToken"),
+                      std::string::npos);
+            ASSERT_EQ(enqueueCalls, 0);
+            ASSERT_FALSE(dataReplicatorExternalState->getMetadataWasProcessed());
+            ASSERT_EQ(fetcher->getLastOpTimeFetched(), lastFetched);
+            ASSERT_FALSE(fetcher->isActive());
+        }
+    }
+
+    void assertInvalidGetMoreToken(const BSONObj& token, ErrorCodes::Error expectedError) {
+        for (bool exhaustReply : {false, true}) {
+            for (bool emptyBatch : {false, true}) {
+                int enqueueCalls = 0;
+                enqueueDocumentsFn = [&](OplogFetcher::Documents::const_iterator,
+                                         OplogFetcher::Documents::const_iterator,
+                                         const OplogFetcher::DocumentsInfo&) {
+                    ++enqueueCalls;
+                    return Status::OK();
+                };
+                ShutdownState shutdownState;
+                auto fetcher = getOplogFetcherAfterConnectionCreated(std::ref(shutdownState));
+                auto conn = fetcher->getDBClientConnection_forTest();
+                const auto firstEntry = makeNoopOplogEntry(lastFetched);
+                const OpTime acceptedOpTime{{Seconds(456), 0}, lastFetched.getTerm()};
+                const auto secondEntry = makeNoopOplogEntry(acceptedOpTime);
+                const auto metadata = makeOplogBatchMetadata(replSetMetadata, oqMetadata);
+                processSingleRequestResponse(
+                    conn, makeFirstBatch(22LL, {firstEntry, secondEntry}, metadata), true);
+                ASSERT_EQ(fetcher->getLastOpTimeFetched(), acceptedOpTime);
+                ASSERT_TRUE(dataReplicatorExternalState->getMetadataWasProcessed());
+                ASSERT_EQ(enqueueCalls, 1);
+                if (exhaustReply) {
+                    processSingleRequestResponse(
+                        conn, makeSubsequentBatch(22LL, {}, metadata, true), true);
+                }
+                const rpc::ReplSetMetadata changedMetadata(
+                    1, OpTimeAndWallTime(), OpTime(), 1, 0, OID(), syncSourceIndex, true);
+                const auto rejectedMetadata = makeOplogBatchMetadata(changedMetadata, oqMetadata);
+                OplogFetcher::Documents documents;
+                if (!emptyBatch) {
+                    documents.push_back(
+                        makeNoopOplogEntry({{Seconds(789), 0}, lastFetched.getTerm()}));
+                }
+                const auto response =
+                    makeBatchWithResumeToken(CursorResponse::ResponseType::SubsequentResponse,
+                                             0LL,
+                                             documents,
+                                             rejectedMetadata,
+                                             token);
+                if (exhaustReply) {
+                    processSingleExhaustResponse(conn, response, false);
+                } else {
+                    processSingleRequestResponse(conn, response);
+                }
+                fetcher->join();
+                ASSERT_EQ(shutdownState.getStatus().code(), expectedError);
+                ASSERT_EQ(enqueueCalls, exhaustReply ? 2 : 1);
+                ASSERT_FALSE(dataReplicatorExternalState->getIsPrimary());
+                ASSERT_EQ(fetcher->getLastOpTimeFetched(), acceptedOpTime);
+                ASSERT_FALSE(fetcher->isActive());
+            }
+        }
+    }
+};
+
+TEST_F(OplogFetcherResumeTokenTest, EmptyFirstBatchResumeTokenReturnsError) {
+    assertInvalidFirstBatchToken(BSONObj(), ErrorCodes::IDLFailedToParse);
+}
+
+TEST_F(OplogFetcherResumeTokenTest, NullFirstBatchResumeTimestampReturnsError) {
+    assertInvalidFirstBatchToken(BSON("ts" << BSONNULL), ErrorCodes::IDLFailedToParse);
+}
+
+TEST_F(OplogFetcherResumeTokenTest, WrongFirstBatchResumeTimestampTypeReturnsError) {
+    assertInvalidFirstBatchToken(BSON("ts" << "invalid"), ErrorCodes::TypeMismatch);
+}
+
+TEST_F(OplogFetcherResumeTokenTest, UnknownFirstBatchResumeTokenFieldReturnsError) {
+    assertInvalidFirstBatchToken(BSON("ts" << Timestamp(567, 0) << "extra" << 1),
+                                 ErrorCodes::IDLUnknownField);
+}
+
+TEST_F(OplogFetcherResumeTokenTest, DuplicateFirstBatchResumeTimestampReturnsError) {
+    assertInvalidFirstBatchToken(BSON("ts" << Timestamp(567, 0) << "ts" << Timestamp(568, 0)),
+                                 ErrorCodes::IDLDuplicateField);
+}
+
+TEST_F(OplogFetcherResumeTokenTest, EmptyGetMoreResumeTokenReturnsError) {
+    assertInvalidGetMoreToken(BSONObj(), ErrorCodes::IDLFailedToParse);
+}
+
+TEST_F(OplogFetcherResumeTokenTest, WrongGetMoreResumeTimestampTypeReturnsError) {
+    assertInvalidGetMoreToken(BSON("ts" << "invalid"), ErrorCodes::TypeMismatch);
+}
+
+TEST_F(OplogFetcherResumeTokenTest, InvalidTokenWithPendingExhaustRepliesClosesConnection) {
+    int enqueueCalls = 0;
+    enqueueDocumentsFn = [&](OplogFetcher::Documents::const_iterator,
+                             OplogFetcher::Documents::const_iterator,
+                             const OplogFetcher::DocumentsInfo&) {
+        ++enqueueCalls;
+        return Status::OK();
+    };
+    ShutdownState shutdownState;
+    auto fetcher = getOplogFetcherAfterConnectionCreated(std::ref(shutdownState));
+    auto conn = fetcher->getDBClientConnection_forTest();
+    const auto firstEntry = makeNoopOplogEntry(lastFetched);
+    const OpTime acceptedOpTime{{Seconds(456), 0}, lastFetched.getTerm()};
+    const auto metadata = makeOplogBatchMetadata(replSetMetadata, oqMetadata);
+    processSingleRequestResponse(
+        conn,
+        makeFirstBatch(22LL, {firstEntry, makeNoopOplogEntry(acceptedOpTime)}, metadata),
+        true);
+    ASSERT_FALSE(conn->isFailed());
+
+    // A non-terminal exhaust reply: the sync source would keep pushing replies on this stream.
+    const auto response =
+        makeBatchWithResumeToken(CursorResponse::ResponseType::SubsequentResponse,
+                                 22LL,
+                                 {makeNoopOplogEntry({{Seconds(789), 0}, lastFetched.getTerm()})},
+                                 metadata,
+                                 BSON("ts" << "invalid"),
+                                 true /* moreToCome */);
+    processSingleRequestResponse(conn, response);
+    fetcher->join();
+
+    ASSERT_EQ(shutdownState.getStatus().code(), ErrorCodes::TypeMismatch);
+    ASSERT_EQ(enqueueCalls, 1);
+    ASSERT_EQ(fetcher->getLastOpTimeFetched(), acceptedOpTime);
+    // The completed fetcher is still alive, but the abandoned exhaust stream must be closed.
+    ASSERT_TRUE(conn->isFailed());
+}
+
+TEST_F(OplogFetcherResumeTokenTest, InvalidGetMoreTokenWithoutExhaustReturnsError) {
+    oplogFetcherUsesExhaust.store(false);
+    int enqueueCalls = 0;
+    enqueueDocumentsFn = [&](OplogFetcher::Documents::const_iterator,
+                             OplogFetcher::Documents::const_iterator,
+                             const OplogFetcher::DocumentsInfo&) {
+        ++enqueueCalls;
+        return Status::OK();
+    };
+    ShutdownState shutdownState;
+    auto fetcher = getOplogFetcherAfterConnectionCreated(std::ref(shutdownState));
+    auto conn = fetcher->getDBClientConnection_forTest();
+    const auto firstEntry = makeNoopOplogEntry(lastFetched);
+    const OpTime acceptedOpTime{{Seconds(456), 0}, lastFetched.getTerm()};
+    const auto metadata = makeOplogBatchMetadata(replSetMetadata, oqMetadata);
+    processSingleRequestResponse(
+        conn,
+        makeFirstBatch(22LL, {firstEntry, makeNoopOplogEntry(acceptedOpTime)}, metadata),
+        true);
+
+    const auto response =
+        makeBatchWithResumeToken(CursorResponse::ResponseType::SubsequentResponse,
+                                 0LL,
+                                 {makeNoopOplogEntry({{Seconds(789), 0}, lastFetched.getTerm()})},
+                                 metadata,
+                                 BSONObj());
+    const auto getMore = processSingleRequestResponse(conn, response);
+    fetcher->join();
+
+    ASSERT_FALSE(OpMsg::isFlagSet(getMore, OpMsg::kExhaustSupported));
+    ASSERT_EQ(shutdownState.getStatus().code(), ErrorCodes::IDLFailedToParse);
+    ASSERT_EQ(enqueueCalls, 1);
+    ASSERT_EQ(fetcher->getLastOpTimeFetched(), acceptedOpTime);
+}
+
+TEST_F(OplogFetcherResumeTokenTest, InvalidTokenWithSyncSourceChangeReturnsInvalidSyncSource) {
+    for (auto action : {ChangeSyncSourceAction::kStopSyncingAndEnqueueLastBatch,
+                        ChangeSyncSourceAction::kStopSyncingAndDropLastBatchIfPresent}) {
+        int enqueueCalls = 0;
+        enqueueDocumentsFn = [&](OplogFetcher::Documents::const_iterator,
+                                 OplogFetcher::Documents::const_iterator,
+                                 const OplogFetcher::DocumentsInfo&) {
+            ++enqueueCalls;
+            return Status::OK();
+        };
+        dataReplicatorExternalState = std::make_unique<DataReplicatorExternalStateMock>();
+        dataReplicatorExternalState->setCurrentTerm(lastFetched.getTerm());
+        dataReplicatorExternalState->setLastCommittedOpTime({{9999, 0}, lastFetched.getTerm()});
+        dataReplicatorExternalState->setShouldStopFetchingResult(action);
+
+        const auto firstEntry = makeNoopOplogEntry(lastFetched);
+        const auto secondEntry = makeNoopOplogEntry({{Seconds(456), 0}, lastFetched.getTerm()});
+        const auto response =
+            makeBatchWithResumeToken(CursorResponse::ResponseType::InitialResponse,
+                                     0LL,
+                                     {firstEntry, secondEntry},
+                                     makeOplogBatchMetadata(replSetMetadata, oqMetadata),
+                                     BSON("ts" << "invalid"));
+        auto shutdownState = processSingleBatch(response);
+
+        // The sync source must still be changed, but a batch with an untrusted token is dropped.
+        // kStopSyncingAndDropLastBatchIfPresent returns before the token is parsed.
+        ASSERT_EQ(shutdownState->getStatus().code(), ErrorCodes::InvalidSyncSource);
+        ASSERT_EQ(shutdownState->getStatus().reason().find("Invalid postBatchResumeToken") !=
+                      std::string::npos,
+                  action == ChangeSyncSourceAction::kStopSyncingAndEnqueueLastBatch);
+        ASSERT_EQ(dataReplicatorExternalState->getLastSyncSourceChecked(), source);
+        ASSERT_EQ(enqueueCalls, 0);
+        ASSERT_FALSE(dataReplicatorExternalState->getMetadataWasProcessed());
+    }
+}
+
+TEST_F(OplogFetcherResumeTokenTest, InvalidTokenDoesNotUseFetcherRestarts) {
+    int enqueueCalls = 0;
+    enqueueDocumentsFn = [&](OplogFetcher::Documents::const_iterator,
+                             OplogFetcher::Documents::const_iterator,
+                             const OplogFetcher::DocumentsInfo&) {
+        ++enqueueCalls;
+        return Status::OK();
+    };
+    ShutdownState shutdownState;
+    auto fetcher = getOplogFetcherAfterConnectionCreated(std::ref(shutdownState), 3);
+    const auto firstEntry = makeNoopOplogEntry(lastFetched);
+    const auto secondEntry = makeNoopOplogEntry({{Seconds(456), 0}, lastFetched.getTerm()});
+    processSingleRequestResponse(
+        fetcher->getDBClientConnection_forTest(),
+        makeBatchWithResumeToken(CursorResponse::ResponseType::InitialResponse,
+                                 0LL,
+                                 {firstEntry, secondEntry},
+                                 makeOplogBatchMetadata(replSetMetadata, oqMetadata),
+                                 BSONObj()));
+    fetcher->join();
+
+    // A malformed response from this source is not retried on the same cursor; the caller decides
+    // how to recover.
+    ASSERT_EQ(shutdownState.getStatus().code(), ErrorCodes::IDLFailedToParse);
+    ASSERT_EQ(enqueueCalls, 0);
+    ASSERT_EQ(fetcher->getLastOpTimeFetched(), lastFetched);
+}
+
+TEST_F(OplogFetcherResumeTokenTest, MissingResumeTokenKeepsDefaultTimestamp) {
+    const auto firstEntry = makeNoopOplogEntry(lastFetched);
+    const auto secondEntry = makeNoopOplogEntry({{Seconds(456), 0}, lastFetched.getTerm()});
+    const auto metadata = makeOplogBatchMetadata(replSetMetadata, oqMetadata);
+    // A sentinel proves that the enqueue callback ran and overwrote the token.
+    lastEnqueuedDocumentsInfo.resumeToken = Timestamp(999, 0);
+    ASSERT_OK(processSingleBatch(makeFirstBatch(0LL, {firstEntry, secondEntry}, metadata),
+                                 false /* shouldShutdown */,
+                                 true /* requireFresherSyncSource */,
+                                 true /* lastFetchedShouldAdvance */)
+                  ->getStatus());
+    ASSERT_EQ(lastEnqueuedDocuments.size(), 1U);
+    ASSERT_BSONOBJ_EQ(lastEnqueuedDocuments.front(), secondEntry);
+    ASSERT_EQ(lastEnqueuedDocumentsInfo.resumeToken, Timestamp());
+    ASSERT_EQ(lastEnqueuedDocumentsInfo.lastDocument,
+              OpTime({Seconds(456), 0}, lastFetched.getTerm()));
+    ASSERT_TRUE(dataReplicatorExternalState->getMetadataWasProcessed());
+}
+
+TEST_F(OplogFetcherResumeTokenTest, ZeroResumeTimestampIsAccepted) {
+    const auto firstEntry = makeNoopOplogEntry(lastFetched);
+    const auto secondEntry = makeNoopOplogEntry({{Seconds(456), 0}, lastFetched.getTerm()});
+    const auto metadata = makeOplogBatchMetadata(replSetMetadata, oqMetadata);
+    lastEnqueuedDocumentsInfo.resumeToken = Timestamp(999, 0);
+    const auto response = makeBatchWithResumeToken(CursorResponse::ResponseType::InitialResponse,
+                                                   0LL,
+                                                   {firstEntry, secondEntry},
+                                                   metadata,
+                                                   BSON("ts" << Timestamp(0, 0)));
+    ASSERT_OK(processSingleBatch(response,
+                                 false /* shouldShutdown */,
+                                 true /* requireFresherSyncSource */,
+                                 true /* lastFetchedShouldAdvance */)
+                  ->getStatus());
+    ASSERT_EQ(lastEnqueuedDocuments.size(), 1U);
+    ASSERT_EQ(lastEnqueuedDocumentsInfo.resumeToken, Timestamp(0, 0));
+}
+
+TEST_F(OplogFetcherResumeTokenTest, ResumeTokenIsClearedWhenLaterBatchOmitsIt) {
+    ShutdownState shutdownState;
+    auto fetcher = getOplogFetcherAfterConnectionCreated(std::ref(shutdownState));
+    auto conn = fetcher->getDBClientConnection_forTest();
+    const auto firstEntry = makeNoopOplogEntry(lastFetched);
+    const auto secondEntry = makeNoopOplogEntry({{Seconds(456), 0}, lastFetched.getTerm()});
+    const auto thirdEntry = makeNoopOplogEntry({{Seconds(789), 0}, lastFetched.getTerm()});
+    const auto metadata = makeOplogBatchMetadata(replSetMetadata, oqMetadata);
+    const Timestamp tokenTimestamp(567, 0);
+    processSingleRequestResponse(
+        conn,
+        makeBatchWithResumeToken(CursorResponse::ResponseType::InitialResponse,
+                                 22LL,
+                                 {firstEntry, secondEntry},
+                                 metadata,
+                                 BSON("ts" << tokenTimestamp)),
+        true);
+    ASSERT_EQ(lastEnqueuedDocumentsInfo.resumeToken, tokenTimestamp);
+
+    processSingleRequestResponse(conn, makeSubsequentBatch(0LL, {thirdEntry}, metadata, false));
+    fetcher->join();
+
+    ASSERT_OK(shutdownState.getStatus());
+    ASSERT_EQ(lastEnqueuedDocuments.size(), 1U);
+    ASSERT_BSONOBJ_EQ(lastEnqueuedDocuments.front(), thirdEntry);
+    ASSERT_EQ(lastEnqueuedDocumentsInfo.resumeToken, Timestamp());
+}
+
+TEST_F(OplogFetcherResumeTokenTest, ValidResumeTokenInEmptyGetMoreDoesNotAdvanceLastFetched) {
+    ShutdownState shutdownState;
+    auto fetcher = getOplogFetcherAfterConnectionCreated(std::ref(shutdownState));
+    auto conn = fetcher->getDBClientConnection_forTest();
+    const auto firstEntry = makeNoopOplogEntry(lastFetched);
+    const auto metadata = makeOplogBatchMetadata(replSetMetadata, oqMetadata);
+    processSingleRequestResponse(conn, makeFirstBatch(22LL, {firstEntry}, metadata), true);
+    const Timestamp tokenTimestamp(567, 0);
+    const auto response = makeBatchWithResumeToken(CursorResponse::ResponseType::SubsequentResponse,
+                                                   0LL,
+                                                   {},
+                                                   metadata,
+                                                   BSON("ts" << tokenTimestamp));
+    processSingleRequestResponse(conn, response);
+    fetcher->join();
+    ASSERT_OK(shutdownState.getStatus());
+    ASSERT_TRUE(lastEnqueuedDocuments.empty());
+    ASSERT_EQ(lastEnqueuedDocumentsInfo.resumeToken, tokenTimestamp);
+    ASSERT_EQ(fetcher->getLastOpTimeFetched(), lastFetched);
+    ASSERT_TRUE(dataReplicatorExternalState->getMetadataWasProcessed());
 }
 
 using OplogFetcherTestDeathTest = OplogFetcherTest;

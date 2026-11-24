@@ -4233,6 +4233,17 @@ uint32_t (*wiredtiger_crc32c_func(void))(const void *, size_t)
 uint32_t (*wiredtiger_crc32c_with_seed_func(void))(uint32_t seed, const void *, size_t)
     WT_ATTRIBUTE_LIBRARY_VISIBLE;
 
+/*!
+ * Enable or disable the process-wide three-stream CRC32C optimization. Enabled by default.
+ * Changes are thread-safe and apply to subsequent checksum calls, including cached function
+ * pointers. Only GNU-compatible x86-64 hardware CRC implementations use the optimization; other
+ * platforms retain their existing algorithms. Neither setting changes checksum values.
+ */
+void wiredtiger_crc32c_three_stream_set_enabled(int enabled) WT_ATTRIBUTE_LIBRARY_VISIBLE;
+
+/*! Return whether the process-wide three-stream CRC32C optimization is enabled. */
+int wiredtiger_crc32c_three_stream_enabled(void) WT_ATTRIBUTE_LIBRARY_VISIBLE;
+
 #endif /* !defined(SWIG) */
 
 /*!

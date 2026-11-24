@@ -3,6 +3,7 @@
 
 #include "mongo/db/storage/wiredtiger/wiredtiger_error_util.h"
 #include "mongo/logv2/log.h"
+#include "mongo/unittest/server_parameter_guard.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/unittest/unittest.h"
 
@@ -21,6 +22,20 @@
 #define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 namespace mongo {
+
+TEST(WiredTigerCApiTest, CRC32CThreeStreamParameterUpdatesCachedFunctions) {
+    const auto crc = wiredtiger_crc32c_func();
+    const auto seededCRC = wiredtiger_crc32c_with_seed_func();
+    const std::string data(65537, 'x');
+    const auto expected = crc(data.data(), data.size());
+    const auto expectedSeeded = seededCRC(0xdeadbeef, data.data(), data.size());
+    for (bool enabled : {false, true, false}) {
+        unittest::ServerParameterGuard guard("wiredTigerCRC32CThreeStreamEnabled", enabled);
+        ASSERT_EQ(wiredtiger_crc32c_three_stream_enabled(), enabled);
+        ASSERT_EQ(crc(data.data(), data.size()), expected);
+        ASSERT_EQ(seededCRC(0xdeadbeef, data.data(), data.size()), expectedSeeded);
+    }
+}
 
 /**
  * This suite holds test cases that run against the WiredTiger C API (wiredtiger.h) directly.

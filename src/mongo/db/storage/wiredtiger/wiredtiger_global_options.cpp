@@ -30,6 +30,11 @@ using namespace std::literals::string_view_literals;
 
 WiredTigerGlobalOptions wiredTigerGlobalOptions;
 
+Status onUpdateWiredTigerCRC32CThreeStreamEnabled(bool enabled) {
+    wiredtiger_crc32c_three_stream_set_enabled(enabled);
+    return Status::OK();
+}
+
 Status WiredTigerGlobalOptions::store(const moe::Environment& params) {
     // WiredTiger storage engine options
     if (!wiredTigerGlobalOptions.engineConfig.empty()) {

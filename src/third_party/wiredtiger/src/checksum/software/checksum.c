@@ -39,8 +39,36 @@
  */
 
 #include <wiredtiger_config.h>
+#include <wiredtiger.h>
 #include <inttypes.h>
 #include <stddef.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+static volatile long crc32c_three_stream_enabled = 1;
+#else
+static int crc32c_three_stream_enabled = 1;
+#endif
+
+/* The switch changes the algorithm, never the cached checksum function pointers. */
+void
+wiredtiger_crc32c_three_stream_set_enabled(int enabled)
+{
+#if defined(_MSC_VER)
+    (void)_InterlockedExchange(&crc32c_three_stream_enabled, enabled != 0);
+#else
+    __atomic_store_n(&crc32c_three_stream_enabled, enabled != 0, __ATOMIC_RELAXED);
+#endif
+}
+
+int
+wiredtiger_crc32c_three_stream_enabled(void)
+{
+#if defined(_MSC_VER)
+    return ((int)_InterlockedCompareExchange(&crc32c_three_stream_enabled, 0, 0));
+#else
+    return (__atomic_load_n(&crc32c_three_stream_enabled, __ATOMIC_RELAXED));
+#endif
+}
 
 /*
  * The CRC slicing tables.

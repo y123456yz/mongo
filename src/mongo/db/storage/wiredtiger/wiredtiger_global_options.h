@@ -13,6 +13,8 @@
 
 namespace mongo {
 
+Status onUpdateWiredTigerCRC32CThreeStreamEnabled(bool enabled);
+
 class WiredTigerGlobalOptions {
 public:
     WiredTigerGlobalOptions()

@@ -5,6 +5,8 @@
 #include "mongo/base/status.h"
 #include "mongo/config.h"  // IWYU pragma: keep
 #include "mongo/db/storage/wiredtiger/wiredtiger_global_options.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_global_options_gen.h"
+#include "mongo/util/assert_util.h"
 #include "mongo/util/exit_code.h"
 #include "mongo/util/options_parser/startup_option_init.h"
 #include "mongo/util/options_parser/startup_options.h"
@@ -27,5 +29,10 @@ MONGO_STARTUP_OPTIONS_STORE(WiredTigerOptions)(InitializerContext* context) {
         std::cerr << "try '" << context->args()[0] << " --help' for more information" << std::endl;
         ::_exit(static_cast<int>(ExitCode::badOptions));
     }
+}
+
+MONGO_STARTUP_OPTIONS_POST(WiredTigerCRC32COptions)(InitializerContext*) {
+    uassertStatusOK(onUpdateWiredTigerCRC32CThreeStreamEnabled(
+        gWiredTigerCRC32CThreeStreamEnabled.loadRelaxed()));
 }
 }  // namespace mongo

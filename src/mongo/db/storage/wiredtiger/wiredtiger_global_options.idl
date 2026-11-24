@@ -13,6 +13,20 @@ global:
         source: [cli, ini, yaml]
 
 server_parameters:
+    wiredTigerCRC32CThreeStreamEnabled:
+        description: >-
+            Enable three independent hardware CRC32C streams for buffers of at least 3072 bytes
+            on GNU-compatible x86-64 with SSE4.2. When false, use the original single stream.
+            Applies process-wide to WiredTiger and callers of its CRC32C APIs, including OP_MSG.
+            Does not disable checksum validation or change checksum values; unsupported platforms
+            keep their existing implementations. Each checksum call observes one setting.
+        set_at: [startup, runtime]
+        cpp_vartype: Atomic<bool>
+        cpp_varname: gWiredTigerCRC32CThreeStreamEnabled
+        on_update: onUpdateWiredTigerCRC32CThreeStreamEnabled
+        default: true
+        redact: false
+
     wiredTigerEngineRuntimeConfig:
         description: "WiredTiger Configuration"
         set_at: runtime

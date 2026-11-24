@@ -356,7 +356,8 @@ Status _doValidateColumn(const char* originalBuffer,
                          uint64_t maxLength,
                          uint64_t& accUncompressedSize,
                          BSONValidateModeEnum mode,
-                         ValidationVersion validationVersion);
+                         ValidationVersion validationVersion,
+                         bool shortFieldNameScan);
 
 template <bool precise, typename BSONValidator>
 class ValidateBuffer {
@@ -365,12 +366,14 @@ public:
                    uint64_t maxLength,
                    BSONValidator validator,
                    ValidationVersion validationVersion,
+                   bool shortFieldNameScan,
                    bool insideColumn = false)
         : _data(data),
           _maxLength(maxLength),
           _validator(validator),
           _validationVersion(validationVersion),
-          _insideColumn(insideColumn) {
+          _insideColumn(insideColumn),
+          _shortFieldNameScan(shortFieldNameScan) {
         if constexpr (precise)
             _frames.resize(BSONDepth::getMaxAllowableDepth() + 1);
     }
@@ -440,9 +443,8 @@ public:
             // hold the literal's EOO, just as validate() requires for a top-level object. Without
             // this check, field name scanning could run past the literal into the rest of the
             // column before the length mismatch is detected.
-            uassert(InvalidBSON,
-                    "BSON literal content not terminated with EOO",
-                    _data[size - 1] == 0);
+            uassert(
+                InvalidBSON, "BSON literal content not terminated with EOO", _data[size - 1] == 0);
             _validateIterative(Cursor{ptr, _data + size});
             return size;
         } else {
@@ -479,7 +481,10 @@ private:
         /* Also requires remaining buf after the skip (both BSONColumn and BSONObj guarantee
            this by having at minimum a trailing EOO) */
         void skip(size_t len) {
-            uassert(InvalidBSON, "BSON size is larger than buffer size", (ptr += len) < end);
+            uassert(InvalidBSON,
+                    "BSON size is larger than buffer size",
+                    ptr < end && len < static_cast<size_t>(end - ptr));
+            ptr += len;
         }
 
         template <typename T>
@@ -495,7 +500,7 @@ private:
             uassert(InvalidBSON, "Not null terminated string", !ptr[-1] && len > 0);
         }
 
-        size_t strlen() const {
+        size_t strlen(bool shortFieldNameScan) const {
             // This is actually by far the hottest code in all of BSON validation.
             dassert(ptr < end);
             // Every caller guarantees that end[-1] is a NUL byte: validate() checks the object's
@@ -503,6 +508,8 @@ private:
             // scanning it, and BSONColumn validation checks the column's final EOO. The scalar
             // scan therefore stops before 'end' without its own bounds check. The vector path
             // below only reads while a whole chunk lies inside [ptr, end).
+            if (!shortFieldNameScan)
+                return std::strlen(ptr);
             //
             // Check for EOO first: it ends every object and array, and resolving it with a single
             // byte compare keeps small and empty nested objects as cheap as before.
@@ -560,6 +567,9 @@ private:
             ErrorCodes::InvalidBSON,
             fmt::format("Nested BSON object has to be at least 5 bytes (decoded length: {})", len),
             len >= 5);
+        uassert(InvalidBSON,
+                "BSON size is larger than buffer size",
+                static_cast<size_t>(len) <= static_cast<size_t>(cursor.end - obj));
         _currFrame->end = obj + len;
 
         if constexpr (precise) {
@@ -595,7 +605,8 @@ private:
                                                        count,
                                                        _accumulatedUncompressedColumnSize,
                                                        _validator.validateMode(),
-                                                       _validationVersion)
+                                                       _validationVersion,
+                                                       _shortFieldNameScan)
                                 .isOK());
                 }
                 break;
@@ -606,8 +617,8 @@ private:
                 break;
             case stdx::to_underlying(BSONType::regEx):
                 cursor.skip(0);  // Force validation of the ptr after skipping past the field name.
-                cursor.skip(cursor.strlen() + 1);  // Skip regular expression cstring.
-                cursor.skip(cursor.strlen() + 1);  // Skip options cstring.
+                cursor.skip(cursor.strlen(_shortFieldNameScan) + 1);  // Skip regex cstring.
+                cursor.skip(cursor.strlen(_shortFieldNameScan) + 1);  // Skip options cstring.
                 break;
             case stdx::to_underlying(BSONType::dbRef):
                 cursor.skipString();  // Like String, but...
@@ -682,7 +693,7 @@ private:
             // EOO is same as finding len == 0. The cursor cannot point past EOO, so the strlen
             // is safe.
             uassert(InvalidBSON, "BSON size is larger than buffer size", cursor.ptr < cursor.end);
-            while (size_t len = cursor.strlen()) {
+            while (size_t len = cursor.strlen(_shortFieldNameScan)) {
                 uint8_t type = *cursor.ptr;
                 _currElem = cursor.ptr;
                 // In case _currElem is moved (for instance when the type is CodeWScope).
@@ -775,6 +786,7 @@ private:
     BSONValidator _validator;
     ValidationVersion _validationVersion;
     bool _insideColumn;
+    const bool _shortFieldNameScan;
     uint64_t _accumulatedUncompressedColumnSize;
     bool _firstFrameUpdated = false;  // Has the first frame received nested while measuring an elem
 };
@@ -783,18 +795,20 @@ template <typename BSONValidator>
 Status _doValidate(const char* originalBuffer,
                    uint64_t maxLength,
                    BSONValidator validator,
-                   ValidationVersion validationVersion) {
+                   ValidationVersion validationVersion,
+                   bool shortFieldNameScan) {
     // First try validating using the fast but less precise version. That version will return
     // a not-OK status for objects with CodeWScope or nesting exceeding 32 levels. These cases
     // and actual failures will rerun the precise version that gives a detailed error context.
-    if (MONGO_likely((ValidateBuffer<false, BSONValidator>(
-                          originalBuffer, maxLength, validator, validationVersion)
-                          .validate()
-                          .isOK())))
+    if (MONGO_likely(
+            (ValidateBuffer<false, BSONValidator>(
+                 originalBuffer, maxLength, validator, validationVersion, shortFieldNameScan)
+                 .validate()
+                 .isOK())))
         return Status::OK();
 
     return ValidateBuffer<true, BSONValidator>(
-               originalBuffer, maxLength, validator, validationVersion)
+               originalBuffer, maxLength, validator, validationVersion, shortFieldNameScan)
         .validate();
 }
 
@@ -909,7 +923,8 @@ public:
                                        int maxLength,
                                        uint64_t& accUncompressedSize,
                                        BSONValidateModeEnum mode,
-                                       ValidationVersion validationVersion) noexcept {
+                                       ValidationVersion validationVersion,
+                                       bool shortFieldNameScan) noexcept {
         // run control pointer through to end of buffer
         // run over literal data as directed by lengths from control
         // check formatting of Simple8B blocks
@@ -950,16 +965,28 @@ public:
                     int size;
 
                     if (MONGO_likely(mode == BSONValidateModeEnum::kDefault))
-                        size = ValidateBuffer<precise, DefaultValidator>(
-                                   ptr, end - ptr, DefaultValidator(), validationVersion, true)
+                        size = ValidateBuffer<precise, DefaultValidator>(ptr,
+                                                                         end - ptr,
+                                                                         DefaultValidator(),
+                                                                         validationVersion,
+                                                                         shortFieldNameScan,
+                                                                         true)
                                    .validateAndMeasureElem();
                     else if (mode == BSONValidateModeEnum::kExtended)
-                        size = ValidateBuffer<precise, ExtendedValidator>(
-                                   ptr, end - ptr, ExtendedValidator(), validationVersion, true)
+                        size = ValidateBuffer<precise, ExtendedValidator>(ptr,
+                                                                          end - ptr,
+                                                                          ExtendedValidator(),
+                                                                          validationVersion,
+                                                                          shortFieldNameScan,
+                                                                          true)
                                    .validateAndMeasureElem();
                     else if (mode == BSONValidateModeEnum::kFull)
-                        size = ValidateBuffer<precise, FullValidator>(
-                                   ptr, end - ptr, FullValidator(), validationVersion, true)
+                        size = ValidateBuffer<precise, FullValidator>(ptr,
+                                                                      end - ptr,
+                                                                      FullValidator(),
+                                                                      validationVersion,
+                                                                      shortFieldNameScan,
+                                                                      true)
                                    .validateAndMeasureElem();
                     else
                         MONGO_UNREACHABLE;
@@ -975,16 +1002,28 @@ public:
                     ++ptr;
                     const auto validateResult = [&]() -> Status {
                         if (MONGO_likely(mode == BSONValidateModeEnum::kDefault))
-                            return ValidateBuffer<precise, DefaultValidator>(
-                                       ptr, end - ptr, DefaultValidator(), validationVersion, true)
+                            return ValidateBuffer<precise, DefaultValidator>(ptr,
+                                                                             end - ptr,
+                                                                             DefaultValidator(),
+                                                                             validationVersion,
+                                                                             shortFieldNameScan,
+                                                                             true)
                                 .validate();
                         if (mode == BSONValidateModeEnum::kExtended)
-                            return ValidateBuffer<precise, ExtendedValidator>(
-                                       ptr, end - ptr, ExtendedValidator(), validationVersion, true)
+                            return ValidateBuffer<precise, ExtendedValidator>(ptr,
+                                                                              end - ptr,
+                                                                              ExtendedValidator(),
+                                                                              validationVersion,
+                                                                              shortFieldNameScan,
+                                                                              true)
                                 .validate();
                         if (mode == BSONValidateModeEnum::kFull)
-                            return ValidateBuffer<precise, FullValidator>(
-                                       ptr, end - ptr, FullValidator(), validationVersion, true)
+                            return ValidateBuffer<precise, FullValidator>(ptr,
+                                                                          end - ptr,
+                                                                          FullValidator(),
+                                                                          validationVersion,
+                                                                          shortFieldNameScan,
+                                                                          true)
                                 .validate();
                         MONGO_UNREACHABLE;
                     }();
@@ -1001,10 +1040,10 @@ public:
                 } else {
                     // Simple8b block sequence, just check for memory overflow of block count
                     uint8_t numBlocks = bsoncolumn::numSimple8bBlocksForControlByte(control);
-                    int size = sizeof(uint64_t) * numBlocks;
+                    const size_t size = sizeof(uint64_t) * numBlocks;
                     uassert(InvalidBSONColumn,
                             "BSONColumn blocks exceed buffer size",
-                            ptr + size + 1 <= end);
+                            size + 1 <= static_cast<size_t>(end - ptr));
 
                     memEstimator.onSimple8bControl(ptr + 1, size);
                     ptr += 1 + size;
@@ -1024,24 +1063,26 @@ Status _doValidateColumn(const char* originalBuffer,
                          uint64_t maxLength,
                          uint64_t& accUncompressedSize,
                          BSONValidateModeEnum mode,
-                         ValidationVersion validationVersion) {
+                         ValidationVersion validationVersion,
+                         bool shortFieldNameScan) {
+    auto attemptedSize = accUncompressedSize;
+    auto status = ColumnValidator<false>::doValidateBSONColumn(
+        originalBuffer, maxLength, attemptedSize, mode, validationVersion, shortFieldNameScan);
     if constexpr (precise) {
-        // First try validating using the fast but less precise version. That version will
-        // return a not-OK status for objects with CodeWScope or nesting exceeding 32 levels.
-        // These cases and actual failures will rerun the precise version that gives a detailed
-        // error context.
-        if (MONGO_likely(
-                ColumnValidator<false>::doValidateBSONColumn(
-                    originalBuffer, maxLength, accUncompressedSize, mode, validationVersion)
-                    .isOK()))
-            return Status::OK();
-
-        return ColumnValidator<true>::doValidateBSONColumn(
-            originalBuffer, maxLength, accUncompressedSize, mode, validationVersion);
-    } else {
-        return ColumnValidator<false>::doValidateBSONColumn(
-            originalBuffer, maxLength, accUncompressedSize, mode, validationVersion);
+        if (!status.isOK()) {
+            attemptedSize = accUncompressedSize;
+            status = ColumnValidator<true>::doValidateBSONColumn(originalBuffer,
+                                                                 maxLength,
+                                                                 attemptedSize,
+                                                                 mode,
+                                                                 validationVersion,
+                                                                 shortFieldNameScan);
+        }
     }
+    if (status.isOK()) {
+        accUncompressedSize = attemptedSize;
+    }
+    return status;
 }
 
 }  // namespace
@@ -1050,13 +1091,19 @@ Status validateBSON(const char* originalBuffer,
                     uint64_t maxLength,
                     BSONValidateModeEnum mode,
                     ValidationVersion validationVersion) noexcept {
+    const bool shortFieldNameScan = gEnableBsonValidateShortFieldNameScan.loadRelaxed();
     if (MONGO_likely(mode == BSONValidateModeEnum::kDefault))
-        return _doValidate(originalBuffer, maxLength, DefaultValidator(), validationVersion);
+        return _doValidate(
+            originalBuffer, maxLength, DefaultValidator(), validationVersion, shortFieldNameScan);
     else if (mode == BSONValidateModeEnum::kExtended)
-        return _doValidate(originalBuffer, maxLength, ExtendedValidator(), validationVersion);
+        return _doValidate(
+            originalBuffer, maxLength, ExtendedValidator(), validationVersion, shortFieldNameScan);
     else if (mode == BSONValidateModeEnum::kFull)
-        return ValidateBuffer<true, FullValidator>(
-                   originalBuffer, maxLength, FullValidator(), validationVersion)
+        return ValidateBuffer<true, FullValidator>(originalBuffer,
+                                                   maxLength,
+                                                   FullValidator(),
+                                                   validationVersion,
+                                                   shortFieldNameScan)
             .validate();
     else
         MONGO_UNREACHABLE;
@@ -1073,8 +1120,9 @@ Status validateBSONColumn(const char* originalBuffer,
                           BSONValidateModeEnum mode,
                           ValidationVersion validationVersion) noexcept {
     uint64_t uncompressedSize = 0;
+    const bool shortFieldNameScan = gEnableBsonValidateShortFieldNameScan.loadRelaxed();
     return _doValidateColumn<true>(
-        originalBuffer, maxLength, uncompressedSize, mode, validationVersion);
+        originalBuffer, maxLength, uncompressedSize, mode, validationVersion, shortFieldNameScan);
 }
 
 }  // namespace mongo

@@ -99,6 +99,7 @@
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/primary_only_service.h"
 #include "mongo/db/repl/primary_only_service_op_observer.h"
+#include "mongo/db/repl/receive_decode_pipeline.h"
 #include "mongo/db/repl/repl_server_parameters_gen.h"
 #include "mongo/db/repl/repl_set_member_in_standalone_mode.h"
 #include "mongo/db/repl/repl_settings.h"
@@ -1935,6 +1936,7 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
         tlm->shutdown();
     }
 
+    repl::ReceiveDecodePipeline::shutdownPool();
     transport::ReplCompressionThreadPool::get().shutdown();
 
     if (auto* healthLog = HealthLogInterface::get(serviceContext)) {

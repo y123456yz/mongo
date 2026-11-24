@@ -5,6 +5,17 @@ global:
     cpp_namespace: "mongo::transport"
 
 server_parameters:
+    enableExhaustSingleChecksum:
+        description: >-
+            Finalize exhaust response flags before computing the response checksum once.
+            When false, preserve the legacy checksum-before-flags and recomputation order.
+            Both paths preserve checksum verification and identical wire messages.
+        set_at: [startup, runtime]
+        cpp_varname: gEnableExhaustSingleChecksum
+        cpp_vartype: Atomic<bool>
+        default: true
+        redact: false
+
     joinIngressSessionsOnShutdown:
         description: Allow server to perform a graceful shutdown for ingress sessions.
         set_at: startup

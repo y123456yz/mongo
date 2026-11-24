@@ -26,6 +26,17 @@ enums:
 # Range and default value should be kept in sync with src/mongo/bson/bson_validate.h
 
 server_parameters:
+    enableBsonValidateShortFieldNameScan:
+        description: >-
+            Use bounded inline vector probes for short BSON field names and regex cstrings.
+            When false, use the legacy scalar scan. BSON validation remains enabled.
+            Read once per validation call; unsupported architectures use the scalar scan.
+        set_at: [startup, runtime]
+        cpp_vartype: Atomic<bool>
+        cpp_varname: gEnableBsonValidateShortFieldNameScan
+        default: true
+        redact: false
+
     bsonTestValidationVersion:
         description: "The version of the BSON validator that will be used to check correctness of data in test environments"
         set_at: startup

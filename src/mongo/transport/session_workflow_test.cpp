@@ -764,7 +764,9 @@ public:
                              bool expectMoreToCome,
                              boost::optional<BSONObj> nextInvocation = boost::none,
                              bool tls = false,
-                             bool compressed = false) {
+                             bool compressed = false,
+                             bool switchDuringStream = false) {
+        boost::optional<unittest::ServerParameterGuard> toggle;
         auto request = setExhaustSupported(makeOpMsg());
         request.header().setId(nextMessageId());
         request.header().setResponseToMsgId(0);
@@ -803,11 +805,52 @@ public:
         });
 
         Message synthetic;
+        Message originalSwitchedResponse;
+        auto makeSwitchedResponse = [&] {
+            auto response = setExhaust(makeResponse(makeOpMsg()));
+            originalSwitchedResponse = copyMessage(response.response);
+            return response;
+        };
+        auto finalRequestId = requestId;
         expect<Event::sepHandleRequest>(
             [&](OperationContext*, const Message& m) -> Future<DbResponse> {
                 synthetic = copyMessage(m);
+                finalRequestId = m.header().getId();
+                if (switchDuringStream) {
+                    toggle.emplace("enableExhaustSingleChecksum", false);
+                    return makeSwitchedResponse();
+                }
                 return std::move(finalResponse);
             });
+
+        if (switchDuringStream) {
+            for (int i = 0; i < 2; ++i) {
+                Message switchedResponse;
+                expect<Event::sessionSinkMessage>([&](const Message& m) {
+                    switchedResponse = compressed
+                        ? uassertStatusOK(_compressionManager.decompressMessage(m))
+                        : copyMessage(m);
+                    ASSERT_EQ(switchedResponse.header().getResponseToMsgId(), finalRequestId);
+                    ASSERT_TRUE(OpMsg::isFlagSet(switchedResponse, OpMsg::kMoreToCome));
+                    assertValidChecksum(switchedResponse);
+                    assertMatchesLegacyResponse(
+                        originalSwitchedResponse, switchedResponse, true, true, true, tls);
+                    return Status::OK();
+                });
+                expect<Event::sepHandleRequest>(
+                    [&](OperationContext*, const Message& m) -> Future<DbResponse> {
+                        assertValidChecksum(m);
+                        ASSERT_EQ(m.header().getId(), switchedResponse.header().getId());
+                        ASSERT_EQ(m.header().getResponseToMsgId(), finalRequestId);
+                        finalRequestId = m.header().getId();
+                        if (i == 0) {
+                            toggle.reset();
+                            return makeSwitchedResponse();
+                        }
+                        return std::move(finalResponse);
+                    });
+            }
+        }
 
         Message finalSunk;
         expect<Event::sessionSinkMessage>([&](const Message& m) {
@@ -820,7 +863,13 @@ public:
         ordinaryRequest.header().setResponseToMsgId(0);
         const auto ordinaryRequestId = ordinaryRequest.header().getId();
         expect<Event::sessionSourceMessage>(ordinaryRequest);
-        expect<Event::sepHandleRequest>(makeResponse(makeOpMsg()));
+        expect<Event::sepHandleRequest>(
+            [&](OperationContext*, const Message&) -> Future<DbResponse> {
+                if (switchDuringStream) {
+                    toggle.reset();
+                }
+                return makeResponse(makeOpMsg());
+            });
         Message ordinarySunk;
         expect<Event::sessionSinkMessage>([&](const Message& m) {
             ordinarySunk = m;
@@ -865,7 +914,7 @@ public:
         // The final batch ends the stream: no moreToCome. It is an ordinary response, so it is
         // checksummed when requested, except over TLS.
         const bool finalHasChecksum = requestHasChecksum && !tls;
-        ASSERT_EQ(finalSunk.header().getResponseToMsgId(), synthetic.header().getId());
+        ASSERT_EQ(finalSunk.header().getResponseToMsgId(), finalRequestId);
         ASSERT_FALSE(OpMsg::isFlagSet(finalSunk, OpMsg::kMoreToCome));
         ASSERT_EQ(OpMsg::isFlagSet(finalSunk, OpMsg::kChecksumPresent), finalHasChecksum);
         if (finalHasChecksum) {
@@ -1035,6 +1084,72 @@ TEST_F(SessionWorkflowExhaustChecksumTest, TLSExhaustResponseWithoutChecksum) {
         false /* requestHasChecksum */, true /* expectMoreToCome */, boost::none, true /* tls */);
 }
 #endif  // MONGO_CONFIG_SSL
+
+TEST_F(SessionWorkflowExhaustChecksumTest, SwitchChecksumDuringStream) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", true);
+    runExhaustIteration(true, true, boost::none, false, false, true);
+}
+
+TEST_F(SessionWorkflowExhaustChecksumTest, SwitchChecksumDuringCompressedStream) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", true);
+    runExhaustIteration(true, true, boost::none, false, true, true);
+}
+
+TEST_F(SessionWorkflowExhaustChecksumTest, LegacyExhaustChecksum) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", false);
+    runExhaustIteration(true, true);
+}
+
+TEST_F(SessionWorkflowExhaustChecksumTest, LegacyExhaustWithoutChecksum) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", false);
+    runExhaustIteration(false, true);
+}
+
+TEST_F(SessionWorkflowExhaustChecksumTest, LegacyExhaustChecksumWithoutMoreToCome) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", false);
+    FailPointEnableBlock fp("doNotSetMoreToCome");
+    runExhaustIteration(true, false);
+}
+
+TEST_F(SessionWorkflowExhaustChecksumTest, LegacyExhaustNextInvocationChecksum) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", false);
+    runExhaustIteration(true, true, BSON("next" << 1 << "$db" << "test"));
+}
+
+TEST_F(SessionWorkflowExhaustChecksumTest, LegacyCompressedExhaustChecksum) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", false);
+    runExhaustIteration(true, true, boost::none, false, true);
+}
+
+TEST_F(SessionWorkflowExhaustChecksumTest, LegacyCompressedExhaustWithoutChecksum) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", false);
+    runExhaustIteration(false, true, boost::none, false, true);
+}
+
+TEST_F(SessionWorkflowExhaustChecksumTest, LegacyCompressedExhaustNextInvocationChecksum) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", false);
+    runExhaustIteration(true, true, BSON("next" << 1 << "$db" << "test"), false, true);
+}
+
+#ifdef MONGO_CONFIG_SSL
+TEST_F(SessionWorkflowExhaustChecksumTest, LegacyTLSExhaustChecksum) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", false);
+    markSessionAsTLS();
+    runExhaustIteration(true, true, boost::none, true);
+}
+
+TEST_F(SessionWorkflowExhaustChecksumTest, LegacyTLSCompressedExhaustChecksum) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", false);
+    markSessionAsTLS();
+    runExhaustIteration(true, true, boost::none, true, true);
+}
+
+TEST_F(SessionWorkflowExhaustChecksumTest, LegacyTLSExhaustWithoutChecksum) {
+    unittest::ServerParameterGuard guard("enableExhaustSingleChecksum", false);
+    markSessionAsTLS();
+    runExhaustIteration(false, true, boost::none, true);
+}
+#endif
 #endif  // MONGO_CONFIG_WIREDTIGER_ENABLED
 
 class ConnectionEstablishmentQueueingTest : public SessionWorkflowTest {
@@ -1748,7 +1863,11 @@ TEST_F(RateLimitRejectionResponseTest, AppendChecksumUsesReservedSlackAndIsValid
 
     OpMsg::appendChecksum(&resp);
 
+#ifdef MONGO_CONFIG_WIREDTIGER_ENABLED
     ASSERT_TRUE(OpMsg::isFlagSet(resp, OpMsg::kChecksumPresent));
+#else
+    ASSERT_FALSE(OpMsg::isFlagSet(resp, OpMsg::kChecksumPresent));
+#endif
     ASSERT_EQ(resp.capacity(), capacityBefore)
         << "appendChecksum reallocated the rejection response";
     ASSERT_EQ(resp.buf(), bufBefore) << "rejection response buffer moved during appendChecksum";

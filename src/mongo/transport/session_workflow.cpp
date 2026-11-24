@@ -49,6 +49,7 @@
 #include "mongo/transport/session.h"
 #include "mongo/transport/session_establishment_rate_limiter.h"
 #include "mongo/transport/session_manager.h"
+#include "mongo/transport/session_manager_common_gen.h"
 #include "mongo/transport/session_workflow_p.h"
 #include "mongo/transport/transport_layer_manager.h"
 #include "mongo/transport/transport_options_gen.h"
@@ -1135,16 +1136,30 @@ void SessionWorkflow::Impl::_acceptResponse(DbResponse response) {
     // sent to the database once again to be processed. This cycle repeats as long as
     // the dbresponses continue to indicate the exhaust stream should continue.
     //
-    // Finalize the response flags before checksumming so the response is checksummed only once.
     const bool continueExhaust = shouldContinueExhaust(work.in(), response);
-    if (continueExhaust) {
-        markExhaustResponse(response);
+    const bool requestHasChecksum = OpMsg::isFlagSet(work.in(), OpMsg::kChecksumPresent);
+    const bool singleChecksum = gEnableExhaustSingleChecksum.loadRelaxed();
+    if (singleChecksum) {
+        // Finalize flags first. Exhaust continuations preserve their checksum even over TLS.
+        if (continueExhaust) {
+            markExhaustResponse(response);
+        }
+        if (requestHasChecksum && (continueExhaust || !isTLS())) {
+            OpMsg::appendChecksum(&toSink);
+        }
+    } else {
+        // Legacy order: checksum the ordinary reply, then redo it after the exhaust flags change.
+        if (requestHasChecksum && !isTLS()) {
+            OpMsg::appendChecksum(&toSink);
+        }
+        if (continueExhaust) {
+            OpMsg::removeChecksum(&toSink);
+            markExhaustResponse(response);
+            if (requestHasChecksum) {
+                OpMsg::appendChecksum(&toSink);
+            }
+        }
     }
-
-    // Exhaust responses have always been checksummed whenever the request was, even over TLS.
-    // Preserve that wire behavior.
-    if (OpMsg::isFlagSet(work.in(), OpMsg::kChecksumPresent) && (continueExhaust || !isTLS()))
-        OpMsg::appendChecksum(&toSink);
 
     MessageHooks::onReplyReady(*session(), work.in(), toSink);
 
